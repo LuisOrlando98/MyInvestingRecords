@@ -1,0 +1,184 @@
+import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import crypto from "crypto";
+import User from "../models/User.js";
+import { auth } from "../middleware/auth.js";
+import { authLimiter } from "../middleware/rateLimit.js";
+import { sendEmail } from "../utils/sendEmail.js";
+
+const router = express.Router();
+
+/* ============================
+      REGISTER
+============================ */
+router.post("/register", authLimiter, async (req, res) => {
+  try {
+    const { name, email, password, phone, address, acceptsMarketing } = req.body;
+
+    const exists = await User.findOne({ email });
+    if (exists) return res.status(400).json({ msg: "Email already exists" });
+
+    const hashed = await bcrypt.hash(password, 10);
+
+    const user = await User.create({
+      name,
+      email,
+      password: hashed,
+      phone,
+      address,
+      acceptsMarketing,
+    });
+
+    // Email verification token
+    const verifyToken = jwt.sign(
+      { id: user._id },
+      process.env.EMAIL_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    await sendEmail(
+      email,
+      "Verify your email",
+      `<a href="https://yourapp.com/verify-email?token=${verifyToken}">
+        Click here to verify your email
+       </a>`
+    );
+
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ============================
+      LOGIN
+============================ */
+router.post("/login", authLimiter, async (req, res) => {
+  try {
+    const { email, password, ip } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ msg: "User not found" });
+
+    console.log("👉 Email recibido:", email);
+    console.log("👉 Password recibido:", password);
+    console.log("👉 Hash en Mongo:", user?.password);
+
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(400).json({ msg: "Incorrect password" });
+
+    const accessToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: "15m" }
+    );
+
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_REFRESH_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    user.refreshToken = refreshToken;
+    user.lastLogin = new Date();
+    user.lastIP = ip || null;
+    await user.save();
+
+    res.json({ accessToken, refreshToken, user });
+    } catch (err) {
+        console.error("🔥 ERROR EN LOGIN:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/* ============================
+      REFRESH TOKEN
+============================ */
+router.post("/refresh", async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    const user = await User.findOne({ refreshToken });
+    if (!user) return res.status(403).json({ msg: "Invalid refresh token" });
+
+    jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+
+    const newAccessToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: "15m" }
+    );
+
+    res.json({ accessToken: newAccessToken });
+  } catch {
+    res.status(403).json({ msg: "Invalid refresh token" });
+  }
+});
+
+/* ============================
+      LOGOUT
+============================ */
+router.post("/logout", auth, async (req, res) => {
+  req.user.refreshToken = null;
+  await req.user.save();
+  res.json({ success: true });
+});
+
+/* ============================
+      VERIFY EMAIL
+============================ */
+router.get("/verify-email", async (req, res) => {
+  try {
+    const { token } = req.query;
+    const decoded = jwt.verify(token, process.env.EMAIL_SECRET);
+
+    await User.findByIdAndUpdate(decoded.id, { emailVerified: true });
+
+    res.json({ success: true });
+  } catch {
+    res.status(400).json({ msg: "Invalid token" });
+  }
+});
+
+/* ============================
+      RESET PASSWORD
+============================ */
+router.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  const user = await User.findOne({ email });
+  if (!user) return res.json({ success: true }); // Don't reveal emails
+
+  user.resetToken = crypto.randomUUID();
+  user.resetTokenExp = Date.now() + 15 * 60 * 1000;
+  await user.save();
+
+  await sendEmail(
+    email,
+    "Reset your password",
+    `Código: ${user.resetToken}`
+  );
+
+  res.json({ success: true });
+});
+
+router.post("/reset-password", async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  const user = await User.findOne({
+    resetToken: token,
+    resetTokenExp: { $gt: Date.now() },
+  });
+
+  if (!user) return res.status(400).json({ msg: "Invalid or expired token" });
+
+  user.password = await bcrypt.hash(newPassword, 10);
+  user.resetToken = null;
+  user.resetTokenExp = null;
+  await user.save();
+
+  res.json({ success: true });
+});
+
+export default router;

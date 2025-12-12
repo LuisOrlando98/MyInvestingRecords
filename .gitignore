@@ -1,0 +1,29 @@
+# Node
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build
+dist
+build
+
+# Editor junk
+.DS_Store
+.vscode
+.idea
+
+# Cache
+.cache
+*.log
+
+# Avoid uploading Vite cache
+client/node_modules
+client/dist
+apps/api/node_modules

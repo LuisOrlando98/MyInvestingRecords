@@ -1,0 +1,42 @@
+/* Finviz snapshot style (ligero + profesional) */
+
+.snapshot-table2 {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: "Inter", system-ui, sans-serif;
+  background-color: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.snapshot-td2 {
+  border: 1px solid #e5e7eb; /* Tailwind gray-200 */
+  padding: 6px 10px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.snapshot-td2:nth-child(odd) {
+  background-color: #f9fafb; /* Alternar fondo en labels */
+}
+
+.snapshot-td2:hover {
+  background-color: #eef2ff; /* highlight on hover */
+}
+
+.dark .snapshot-td2 {
+  border-color: #374151;
+  color: #d1d5db;
+}
+
+.dark .snapshot-td2:nth-child(odd) {
+  background-color: #1f2937;
+}
+
+.dark .snapshot-td2:hover {
+  background-color: #111827;
+}
+
+.snapshot-table2 td {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}

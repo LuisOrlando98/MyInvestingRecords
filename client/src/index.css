@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply font-sans bg-gray-100 text-gray-900 antialiased;
+}
+
+/* Animaciones premium */
+@keyframes popIn {
+  0%   { transform: scale(0.4); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-popIn {
+  animation: popIn 0.25s cubic-bezier(0.25, 0.46, 0.45, 1.2);
+}
+
+@keyframes slideUpPremium {
+  0%   { transform: translateY(35px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.animate-slideUpPremium {
+  animation: slideUpPremium 0.35s cubic-bezier(0.25, 0.46, 0.45, 1);
+}
+
+@keyframes fadeIn {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease-out;
+}
