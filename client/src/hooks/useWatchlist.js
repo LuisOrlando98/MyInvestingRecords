@@ -3,6 +3,19 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { io } from "socket.io-client";
 import api from "../services/api";
 
+const logoCache = new Set();
+const preloadLogo = (url) => {
+  if (!url || logoCache.has(url)) return;
+
+  const img = new Image();
+  const markCached = () => logoCache.add(url);
+
+  img.onload = markCached;
+  img.onerror = markCached;
+  img.src = url;
+};
+
+
 /* =========================================================
    SOCKET SINGLETON
 ========================================================= */
@@ -68,6 +81,37 @@ export default function useWatchlist() {
   const visible = usePageVisible();
   const poller = useRef(null);
 
+  const pollerKickoff = useRef(null);
+
+  /* =========================================================
+     LOAD QUOTES + SPARK
+  ========================================================= */
+  const loadQuotes = useCallback(
+    async (customSymbols, { skipLoadingGuard = false } = {}) => {
+      const tickers = customSymbols?.length ? customSymbols : symbols;
+      if (!tickers.length || (loading && !skipLoadingGuard)) return;
+
+      const r = await safeAPI(() =>
+        api.post("/api/market/batch", { tickers })
+      );
+      if (!r) return;
+
+      setQuotes((prev) => {
+        const out = {};
+        for (const s of Object.keys(r.data.quotes || {})) {
+          out[s] = {
+            prevPrice: prev[s]?.price ?? null,
+            ...r.data.quotes[s],
+          };
+        }
+        return out;
+      });
+
+      setSpark(r.data.spark || {});
+    },
+    [symbols, loading]
+  );
+
   /* =========================================================
      LOAD WATCHLIST (🔥 LOGOS VIENEN AQUÍ)
   ========================================================= */
@@ -78,36 +122,21 @@ export default function useWatchlist() {
     setSymbols(r.data.symbols || []);
     setMeta(r.data.meta || {});
     setLoading(false);
-  }, []);
+    await loadQuotes(r.data.symbols || [], { skipLoadingGuard: true });
+  }, [loadQuotes]);
 
   useEffect(() => {
     loadWatchlist();
   }, [loadWatchlist]);
 
-  /* =========================================================
-     LOAD QUOTES + SPARK
-  ========================================================= */
-const loadQuotes = useCallback(async () => {
-  if (!symbols.length || loading) return;
+  useEffect(() => {
+    const logosList = Object.values(meta || {})
+      .map((m) => m?.logo)
+      .filter(Boolean);
 
-  const r = await safeAPI(() =>
-    api.post("/api/market/batch", { tickers: symbols })
-  );
-  if (!r) return;
+    logosList.forEach(preloadLogo);
+  }, [meta]);
 
-  setQuotes((prev) => {
-    const out = {};
-    for (const s of Object.keys(r.data.quotes || {})) {
-      out[s] = {
-        prevPrice: prev[s]?.price ?? null,
-        ...r.data.quotes[s],
-      };
-    }
-    return out;
-  });
-
-  setSpark(r.data.spark || {});
-}, [symbols, loading]);
 
   /* =========================================================
      WEBSOCKET LIVE PRICES
@@ -135,15 +164,42 @@ const loadQuotes = useCallback(async () => {
      SMART POLLING
   ========================================================= */
   useEffect(() => {
-    if (!visible || !symbols.length || loading) return;
-
-    if (!poller.current) {
-      poller.current = setInterval(loadQuotes, 15000);
-    }
-
-    return () => {
+    if (poller.current) {
       clearInterval(poller.current);
       poller.current = null;
+    }
+
+    if (pollerKickoff.current) {
+      clearTimeout(pollerKickoff.current);
+      pollerKickoff.current = null;
+    }
+
+    if (!visible || !symbols.length || loading) return;
+
+    let cancelled = false;
+
+    const startPolling = async () => {
+      await loadQuotes();
+      if (cancelled) return;
+
+      pollerKickoff.current = setTimeout(() => {
+        loadQuotes();
+        poller.current = setInterval(loadQuotes, 15000);
+      }, 7000);
+    };
+
+    startPolling();
+
+    return () => {
+      cancelled = true;
+      if (pollerKickoff.current) {
+        clearTimeout(pollerKickoff.current);
+        pollerKickoff.current = null;
+      }
+      if (poller.current) {
+        clearInterval(poller.current);
+        poller.current = null;
+      }
     };
   }, [visible, symbols, loading, loadQuotes]);
 

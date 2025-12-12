@@ -1,41 +1,37 @@
 // src/components/watchlist/WatchlistItem.jsx
-import React from "react";
+import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import { fmtColor, fmtSigned } from "./utils";
+import { resolveLogo } from "./logoResolver";
 
-export default function WatchlistItem({
+function WatchlistItem({
   symbol,
-  name,
+  name,  
   price,
   change,
   percent,
-  logo,
   editMode,
   onDelete,
-  dragHandle, // props del handle de drag (listeners + attrs)
+  dragHandle,
 }) {
   const navigate = useNavigate();
 
-  const positive = percent > 0;
-  const negative = percent < 0;
+  const percentClass = useMemo(
+    () => fmtColor(percent, { neutral: "text-slate-500" }),
+    [percent]
+  );
 
-  const percentClass = positive
-    ? "text-emerald-600"
-    : negative
-    ? "text-red-600"
-    : "text-slate-500";
+  const changeClass = useMemo(
+    () =>
+      fmtColor(change, {
+        positive: "text-emerald-500",
+        negative: "text-red-500",
+        neutral: "text-slate-400",
+      }),
+    [change]
+  );
 
-  const changeClass = positive
-    ? "text-emerald-500"
-    : negative
-    ? "text-red-500"
-    : "text-slate-400";
-
-  const fmtSigned = (v, digits = 2) => {
-    if (v == null || isNaN(v)) return "--";
-    const n = Number(v);
-    const sign = n > 0 ? "+" : "";
-    return `${sign}${n.toFixed(digits)}`;
-  };
+  const resolved = resolveLogo(symbol);
 
   return (
     <div
@@ -49,17 +45,18 @@ export default function WatchlistItem({
       "
       onClick={() => !editMode && navigate(`/ticker/${symbol}`)}
     >
-      {/* LEFT: LOGO + SYMBOL + NAME */}
+      {/* LEFT */}
       <div className="flex items-center gap-3 min-w-0">
-        {logo ? (
+        {resolved.type === "img" ? (
           <img
-            src={logo}
+            src={resolved.src}
             alt={symbol}
-            className="w-9 h-9 rounded-full border border-slate-200 object-contain bg-white shadow-[0_0_0_1px_rgba(148,163,184,0.2)]"
+            className="w-9 h-9 rounded-full object-contain bg-white border border-slate-200"
+            loading="lazy"
           />
         ) : (
-          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-semibold shadow-sm text-sm">
-            {symbol[0]}
+          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-semibold text-sm">
+            {resolved.letter}
           </div>
         )}
 
@@ -73,38 +70,34 @@ export default function WatchlistItem({
         </div>
       </div>
 
-      {/* RIGHT: PRICE + CHANGE + CONTROLES */}
+      {/* RIGHT */}
       <div className="flex items-center gap-3">
-        {/* PRICE + CHANGE */}
         <div className="text-right mr-1">
-          <p className="text-[15px] font-semibold text-slate-900 leading-snug">
+          <p className="text-[15px] font-semibold text-slate-900">
             {price != null ? price.toFixed(2) : "—"}
           </p>
-          <p className={`text-[11px] ${percentClass} leading-tight`}>
+          <p className={`text-[11px] ${percentClass}`}>
             {percent != null ? `${fmtSigned(percent, 2)}%` : "--"}
           </p>
-          <p className={`text-[11px] ${changeClass} leading-tight`}>
+          <p className={`text-[11px] ${changeClass}`}>
             {change != null ? `(${fmtSigned(change, 2)})` : "(--)"}
           </p>
         </div>
 
-        {/* DELETE BUTTON + DRAG HANDLE (solo en modo edición) */}
         {editMode && (
           <>
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onDelete();
+                onDelete(symbol);
               }}
               className="
                 w-7 h-7 flex items-center justify-center
                 rounded-full border border-red-200
                 bg-red-50 text-red-500
-                hover:bg-red-100 hover:border-red-300
+                hover:bg-red-100
                 text-xs font-bold
-                shadow-sm
-                transition
               "
             >
               ×
@@ -116,8 +109,7 @@ export default function WatchlistItem({
               className="
                 text-slate-400 hover:text-slate-600
                 cursor-grab active:cursor-grabbing
-                px-1 text-lg leading-none
-                select-none
+                px-1 text-lg
               "
             >
               ≡
@@ -128,3 +120,5 @@ export default function WatchlistItem({
     </div>
   );
 }
+
+export default React.memo(WatchlistItem);

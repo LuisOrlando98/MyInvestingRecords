@@ -31,7 +31,7 @@ router.get("/", authMiddleware, async (req, res) => {
 /* =========================================================
    POST /api/watchlist/add
    - Agrega símbolo si no existe
-   - SIEMPRE asegura meta.name + meta.logo
+   - Guarda company + logo REAL (si existe)
 ========================================================= */
 router.post("/add", authMiddleware, async (req, res) => {
   try {
@@ -52,34 +52,34 @@ router.post("/add", authMiddleware, async (req, res) => {
 
     const sym = symbol.toUpperCase().trim();
 
-    // 👉 Agregar símbolo si no existe
+    // Agregar símbolo si no existe
     if (!wl.symbols.includes(sym)) {
       wl.symbols.push(sym);
     }
 
-    // 🔥 CLAVE: asegurar logo + nombre aunque ya exista
+    // Asegurar meta.company + meta.logo
     if (!wl.meta?.[sym]?.logo) {
       try {
         const logoRes = await axios.get(
-          `${process.env.API_BASE_URL}/api/market/logo/${sym}`,
-          {
-            headers: {
-              Authorization: req.headers.authorization,
-            },
-          }
+          `${process.env.API_BASE_URL}/api/market/logo/${sym}`
         );
 
+        if (logoRes.data?.logo) {
+          wl.meta[sym] = {
+            ...(wl.meta[sym] || {}),
+            company: logoRes.data.name || sym,
+            logo: logoRes.data.logo,
+          };
+        } else {
+          wl.meta[sym] = {
+            ...(wl.meta[sym] || {}),
+            company: sym,
+          };
+        }
+      } catch {
         wl.meta[sym] = {
           ...(wl.meta[sym] || {}),
-          name: logoRes.data.name || sym,
-          logo: logoRes.data.logo || null,
-        };
-      } catch (e) {
-        // fallback seguro (no rompe UI)
-        wl.meta[sym] = {
-          ...(wl.meta[sym] || {}),
-          name: sym,
-          logo: `https://ui-avatars.com/api/?name=${sym}&background=0D8ABC&color=fff`,
+          company: sym,
         };
       }
     }
@@ -121,7 +121,7 @@ router.post("/remove", authMiddleware, async (req, res) => {
 
 /* =========================================================
    POST /api/watchlist/repair-meta
-   🔧 Rellena name + logo para símbolos existentes
+   🔧 Repara company + logo para TODOS los símbolos
 ========================================================= */
 router.post("/repair-meta", authMiddleware, async (req, res) => {
   try {
@@ -131,29 +131,29 @@ router.post("/repair-meta", authMiddleware, async (req, res) => {
     let repaired = 0;
 
     for (const sym of wl.symbols) {
-      if (!wl.meta?.[sym]?.logo) {
-        try {
-          const r = await axios.get(
-            `${process.env.API_BASE_URL}/api/market/logo/${sym}`,
-            {
-              headers: { Authorization: req.headers.authorization },
-            }
-          );
+      try {
+        const r = await axios.get(
+          `${process.env.API_BASE_URL}/api/market/logo/${sym}`
+        );
 
+        if (r.data?.logo) {
           wl.meta[sym] = {
             ...(wl.meta[sym] || {}),
-            name: r.data.name || sym,
-            logo: r.data.logo || null,
+            company: r.data.name || sym,
+            logo: r.data.logo,
           };
-
           repaired++;
-        } catch {
+        } else {
           wl.meta[sym] = {
             ...(wl.meta[sym] || {}),
-            name: sym,
-            logo: `https://ui-avatars.com/api/?name=${sym}&background=0D8ABC&color=fff`,
+            company: sym,
           };
         }
+      } catch {
+        wl.meta[sym] = {
+          ...(wl.meta[sym] || {}),
+          company: sym,
+        };
       }
     }
 

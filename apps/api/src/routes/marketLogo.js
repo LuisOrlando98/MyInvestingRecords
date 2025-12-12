@@ -1,7 +1,6 @@
 // routes/marketLogo.js
 import express from "express";
 import axios from "axios";
-import { auth as authMiddleware } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -16,7 +15,7 @@ const router = express.Router();
  * https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks
  */
 
-router.get("/:symbol", authMiddleware, async (req, res) => {
+router.get("/:symbol", async (req, res) => {
   try {
     const symbol = req.params.symbol.toUpperCase();
 
@@ -43,16 +42,17 @@ router.get("/:symbol", authMiddleware, async (req, res) => {
 
     const name = data.companyName || symbol;
 
-    const logo =
-      data.logoUrl ||
-      `https://ui-avatars.com/api/?name=${symbol}&background=random`;
-
+   const logo =
+  data.logoUrl && data.logoUrl.startsWith("http")
+    ? data.logoUrl
+    : `https://financialmodelingprep.com/image-stock/${symbol}.png`;
+    
     return res.json({ name, logo });
   } catch (err) {
     console.log("NASDAQ ERROR:", err.message);
     return res.json({
       name: req.params.symbol,
-      logo: `https://ui-avatars.com/api/?name=${req.params.symbol}&background=random`,
+      logo,
     });
   }
 });

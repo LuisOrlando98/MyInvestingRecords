@@ -62,7 +62,6 @@ async function getFinnhubProfile(symbol) {
       company: res.data.name || symbol,
       exchange: res.data.exchange,
       ipo: res.data.ipo,
-      logo: res.data.logo,
       industry: res.data.finnhubIndustry,
       marketCap: res.data.marketCapitalization,
     };

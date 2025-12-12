@@ -1,6 +1,5 @@
 // src/components/watchlist/Watchlist.jsx
-import React, { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 
 import {
   DndContext,
@@ -14,45 +13,20 @@ import {
   SortableContext,
   verticalListSortingStrategy,
   arrayMove,
-  useSortable,
 } from "@dnd-kit/sortable";
 
 import useWatchlist from "../../hooks/useWatchlist";
+import SortableItem from "./SortableItem";
 import WatchlistItem from "./WatchlistItem";
 
-/* ---------------------------------------------------------- SORTABLE ITEM */
-function SortableItem({ id, children }) {
-  const { attributes, listeners, setNodeRef, transform, transition } =
-    useSortable({ id });
 
-  const style = {
-    transform: transform
-      ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
-      : undefined,
-    transition,
-  };
-
-  return children({ setNodeRef, attributes, listeners, style });
-}
-
-/* ---------------------------------------------------------- HELPERS */
-const fmtColor = (v) =>
-  v > 0 ? "text-emerald-600" : v < 0 ? "text-red-600" : "text-gray-500";
-
-const fmtSigned = (v, digits = 2) => {
-  if (v == null || isNaN(v)) return "--";
-  const num = Number(v);
-  return `${num > 0 ? "+" : ""}${num.toFixed(digits)}`;
-};
 
 /* ---------------------------------------------------------- MAIN WATCHLIST */
 export default function Watchlist() {
-  const navigate = useNavigate();
   const {
     symbols,
     quotes,
     meta,
-    logos,
     addSymbol,     // 👈 debe devolver { success, error }
     removeSymbol,
     reorderSymbols,
@@ -84,19 +58,28 @@ export default function Watchlist() {
   }, [showAdd]);
 
   /* ------------------------------------------------- DRAG END */
-  const onDragEnd = (e) => {
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
 
-    const oldIndex = symbols.indexOf(active.id);
-    const newIndex = symbols.indexOf(over.id);
-    if (oldIndex === -1 || newIndex === -1) return;
+   const onDragEnd = useCallback(
+    (e) => {
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
 
-    reorderSymbols(arrayMove(symbols, oldIndex, newIndex));
-  };
+      const oldIndex = symbols.indexOf(active.id);
+      const newIndex = symbols.indexOf(over.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+
+      reorderSymbols(arrayMove(symbols, oldIndex, newIndex));
+    },
+    [reorderSymbols, symbols]
+  );
 
   /* ------------------------------------------------- DELETE */
-  const handleDelete = (sym) => removeSymbol(sym);
+   const handleDelete = useCallback(
+    (sym) => {
+      removeSymbol(sym);
+    },
+    [removeSymbol]
+  );
 
   /* ------------------------------------------------- ABRIR / CERRAR ADD */
   const openAdd = () => {
@@ -222,15 +205,13 @@ export default function Watchlist() {
             >
               {symbols.map((sym) => {
                 const q = quotes[sym] || {};
+
                 const company =
                   meta[sym]?.company ||
                   quotes[sym]?.longName ||
                   quotes[sym]?.shortName ||
                   sym;
-                const logo =
-                  meta[sym]?.logo ||
-                  logos[sym] ||
-                  null;
+                
                 const price = q.price;
                 const pct = q.changePercent;
                 const chg = q.changeAmount;
@@ -245,12 +226,9 @@ export default function Watchlist() {
                           price={price}
                           percent={pct}
                           change={chg}
-                          logo={logo}
                           editMode={editMode}
-                          onDelete={() => handleDelete(sym)}
-                          dragHandle={
-                            editMode ? { ...attributes, ...listeners } : {}
-                          }
+                          onDelete={handleDelete}
+                          dragHandle={editMode ? { ...attributes, ...listeners } : {}}
                         />
                       </div>
                     )}

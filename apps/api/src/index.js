@@ -15,8 +15,6 @@ import adminRoutes from "./routes/admin.js";
 
 import watchlistRoutes from "./routes/watchlist.js";
 import marketLogoRoutes from "./routes/marketLogo.js";
-import marketLogosBatchRoutes from "./routes/marketLogosBatch.js";
-
 
 import marketDataRoutes from "./routes/marketData.js";
 import finvizRoutes from "./routes/finviz.js";
@@ -76,7 +74,6 @@ app.use("/api/symbols", symbolsRoutes);
 ============================================================ */
 app.use("/api/watchlist", watchlistRoutes);
 app.use("/api/market/logo", marketLogoRoutes);  // ✔ ESTA ES LA BUENA
-app.use("/api/market/logo/batch", marketLogosBatchRoutes);
 
 /* ============================================================
    MARKET DATA
