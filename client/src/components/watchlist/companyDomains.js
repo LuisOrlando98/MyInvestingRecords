@@ -33,6 +33,7 @@ export const COMPANY_DOMAINS = {
   F: "ford.com",
   FOX: "foxcorporation.com",
   GE: "ge.com",
+  GEV: "gevernova.com",
   GILD: "gilead.com",
   GM: "gm.com",
   GOOG: "google.com",
@@ -66,6 +67,7 @@ export const COMPANY_DOMAINS = {
   NU: "nubank.com",
   OKTA: "okta.com",
   ORCL: "oracle.com",
+  OSCR: "hioscar.com",
   PANW: "paloaltonetworks.com",
   PARA: "paramount.com",
   PEP: "pepsico.com",
@@ -90,6 +92,7 @@ export const COMPANY_DOMAINS = {
   TSLA: "tesla.com",
   TXN: "ti.com",
   UBER: "uber.com",
+  ULTA: "ulta.com",
   UNH: "uhc.com",
   V: "visa.com",
   VZ: "verizon.com",
@@ -97,5 +100,6 @@ export const COMPANY_DOMAINS = {
   WFC: "wellsfargo.com",
   WMT: "walmart.com",
   XOM: "exxonmobil.com",
-  ZM: "zoom.us"
+  ZM: "zoom.us",
+  ZTS: "zoetis.com",
 };
