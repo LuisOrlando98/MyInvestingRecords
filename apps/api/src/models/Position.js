@@ -41,14 +41,16 @@ const positionSchema = new mongoose.Schema(
       enum: ["Open", "Closed", "Rolled"],
       default: "Open",
     },
+    archived: {
+      type: Boolean,
+      default: false,
+    },
 
-    // 👉 NUEVO: cómo terminó la posición cuando está Closed
-    // (lo usaremos para pintar verde/rojo en el frontend)
     closedStatus: {
       type: String,
       enum: ["win", "loss", "breakeven"],
       default: undefined,
-    }, // NEW
+    },
 
     action: { type: String },
     quantity: {
@@ -63,6 +65,7 @@ const positionSchema = new mongoose.Schema(
         return !this.legs || this.legs.length === 0;
       },
     },
+
     totalCost: { type: Number },
     fees: { type: Number },
     premiumReceived: { type: Number },
@@ -75,6 +78,32 @@ const positionSchema = new mongoose.Schema(
     breakEvenLow: { type: Number },
     breakEvenHigh: { type: Number },
     realizedPnL: { type: Number },
+
+    // ===============================
+    // 🔁 ROLL DATA (NUEVO)
+    // ===============================
+    rolledFrom: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Position",
+      default: null,
+    },
+    rollGroupId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    cumulativeRealizedPnL: {
+      type: Number,
+      default: 0,
+    },
+    cumulativeNetPremium: {
+      type: Number,
+      default: 0,
+    },
+    cumulativeBreakEven: {
+      type: Number,
+      default: null,
+    },
+
     openDate: { type: Date },
     closeDate: { type: Date },
     legs: { type: [legSchema], default: [] },

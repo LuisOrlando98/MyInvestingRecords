@@ -15,6 +15,11 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 
+import {
+  restrictToVerticalAxis,
+  restrictToParentElement,
+} from "@dnd-kit/modifiers";
+
 import useWatchlist from "../../hooks/useWatchlist";
 import SortableItem from "./SortableItem";
 import WatchlistItem from "./WatchlistItem";
@@ -32,7 +37,11 @@ export default function Watchlist() {
     reorderSymbols,
   } = useWatchlist();
 
-  const sensors = useSensors(useSensor(PointerSensor));
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    })
+  );
 
   const [editMode, setEditMode] = useState(false);
 
@@ -186,7 +195,7 @@ export default function Watchlist() {
       </div>
 
       {/* LISTA */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
         {symbols.length === 0 && (
           <div className="px-5 py-8 text-xs text-slate-500 text-center">
             Your watchlist is empty. Tap the + button to add a symbol.
@@ -195,10 +204,11 @@ export default function Watchlist() {
 
         {symbols.length > 0 && (
           <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={onDragEnd}
-          >
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+              onDragEnd={onDragEnd}
+            >
             <SortableContext
               items={symbols}
               strategy={verticalListSortingStrategy}
@@ -219,7 +229,11 @@ export default function Watchlist() {
                 return (
                   <SortableItem key={sym} id={sym}>
                     {({ setNodeRef, attributes, listeners, style }) => (
-                      <div ref={setNodeRef} style={style}>
+                      <div
+                          ref={setNodeRef}
+                          style={style}
+                          className="w-full max-w-full box-border touch-none"
+                        >
                         <WatchlistItem
                           symbol={sym}
                           name={company}

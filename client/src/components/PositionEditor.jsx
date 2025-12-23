@@ -31,7 +31,13 @@ import { brokerIcons } from "../utils/brokerIcons";
 // ==============================================
 // MAIN COMPONENT
 // ==============================================
-export default function PositionEditor({ initialData, onSave }) {
+
+export default function PositionEditor({ initialData, onSave, isRoll }) {
+  // ======================
+  // ROLL SNAPSHOT (READ ONLY)
+  // ======================
+  const [rollSnapshot, setRollSnapshot] = useState(null);
+
   // ======================
   // GENERAL STATE
   // ======================
@@ -98,9 +104,28 @@ export default function PositionEditor({ initialData, onSave }) {
       ...leg,
       premium: leg.premium ?? "",
     }));
+    // ======================
+    // ROLL SNAPSHOT
+    // ======================
+    if (isRoll) {
+      // netPremium viene en $ → lo llevamos a $
+      // totalCost viene con signo invertido (Webull style)
+      const prevNet =
+        initialData.netPremium != null
+          ? Number(initialData.netPremium) // ✅ ya viene en $
+          : initialData.totalCost != null
+          ? Number(-initialData.totalCost) // ✅ totalCost suele ser negativo si fue crédito
+          : 0;
 
+      setRollSnapshot({
+        expiration: initialData.legs?.[0]?.expiration?.slice(0, 10),
+        strikes: initialData.legs?.map((l) => l.strike).join(" / "),
+        netPremium: prevNet, // ✅ $
+      });
+    }
     setLocalLegs(enriched);
     setIsPrefilled(true); // <-- Key fix
+
   }, [initialData]);
 
   // ==============================================
@@ -553,25 +578,41 @@ export default function PositionEditor({ initialData, onSave }) {
         notes,
         legs: localLegs,
 
-        openDate: initialData.openDate,
-        status: initialData.status,
+        openDate: isRoll ? new Date() : initialData.openDate,
+        status: "Open",
 
+        // ✅ Cash-style (Webull): credit positivo, debit negativo
         totalCost: -metrics.net,
-        netPremium: metrics.net / 100,
+
+        // ✅ IMPORTANTÍSIMO: metrics.net YA está en $
+        netPremium: metrics.net,
+
         maxProfit: metrics.maxProfit,
         maxLoss: metrics.maxLoss,
+
         breakEvenLow:
           typeof metrics.breakeven === "number"
             ? metrics.breakeven
             : metrics.breakeven?.put ?? null,
+
         breakEvenHigh:
           typeof metrics.breakeven === "number"
             ? null
             : metrics.breakeven?.call ?? null,
-        revenue: metrics.net / 100,
+
+        // ✅ revenue = net premium (en $)
+        revenue: metrics.net,
       };
 
-      await onSave(payload);
+      if (isRoll) {
+        await onSave({
+          newPosition: payload,
+          rollOutCost: Math.abs(initialData.totalCost),
+          rollInCredit: metrics.net,
+        });
+      } else {
+        await onSave(payload);
+      }
     } catch (e) {
       console.error(e);
       setError("Error updating position");
@@ -590,7 +631,7 @@ export default function PositionEditor({ initialData, onSave }) {
       className="max-w-[1400px] mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6 p-6"
     >
       <LeftPanel
-        title="Edit Position"
+        title={isRoll ? "Roll Position" : "Edit Position"}
         symbol={symbol}
         setSymbol={setSymbol}
         broker={broker}
@@ -606,6 +647,8 @@ export default function PositionEditor({ initialData, onSave }) {
         setNotes={setNotes}
         underlying={underlying}
         error={error}
+        isRoll={isRoll}
+        rollSnapshot={rollSnapshot}
       />
 
       <LegBuilder
@@ -631,6 +674,8 @@ export default function PositionEditor({ initialData, onSave }) {
         save={save}
         legs={localLegs}
         underlying={underlying}
+        isRoll={isRoll}
+        rollSnapshot={rollSnapshot}
       />
     </motion.div>
   );
@@ -656,6 +701,8 @@ function LeftPanel({
   setNotes,
   underlying,
   error,
+  isRoll,
+  rollSnapshot,
 }) {
   return (
     <motion.div
@@ -664,6 +711,35 @@ function LeftPanel({
       className="bg-white shadow-lg rounded-xl p-6 border border-gray-200"
     >
       <h2 className="text-xl font-semibold mb-4">{title}</h2>
+
+      {isRoll && rollSnapshot && (
+        <div className="mb-4 p-3 rounded-lg border border-purple-300 bg-purple-50">
+          <p className="text-sm font-semibold text-purple-700 mb-1">
+            Rolled From
+          </p>
+
+          <p className="text-xs text-gray-700">
+            Expiration: <strong>{rollSnapshot.expiration}</strong>
+          </p>
+
+          <p className="text-xs text-gray-700">
+            Strikes: <strong>{rollSnapshot.strikes}</strong>
+          </p>
+
+          <p className="text-xs text-gray-700">
+            Previous Net Premium:&nbsp;
+            <strong
+              className={
+                rollSnapshot.netPremium >= 0
+                  ? "text-green-600"
+                  : "text-red-600"
+              }
+            >
+              ${rollSnapshot.netPremium.toFixed(2)}
+            </strong>
+          </p>
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-100 text-red-700 p-2 mb-4 rounded-md text-sm">
@@ -986,14 +1062,22 @@ function StrikeSelect({ chain, label, value, onChange }) {
 /* ============================================================
    METRICS PANEL
 ============================================================ */
-function MetricsPanel({ metrics, saving, save, legs, underlying }) {
+function MetricsPanel({
+  metrics,
+  saving,
+  save,
+  legs,
+  underlying,
+  isRoll,
+  rollSnapshot,
+  }) {
   if (!metrics) {
     return (
       <div className="bg-white shadow-lg rounded-xl p-6 border border-gray-200">
         <p className="text-sm text-gray-500">Complete legs to view metrics.</p>
       </div>
     );
-  }
+}
 
   return (
     <motion.div
@@ -1064,6 +1148,18 @@ function MetricsPanel({ metrics, saving, save, legs, underlying }) {
       </div>
 
       <RiskCurve legs={legs} metrics={metrics} underlying={underlying} />
+      
+      {isRoll && rollSnapshot && metrics.net + rollSnapshot.netPremium < 0 && (
+        <div className="mt-3 p-3 rounded-md bg-red-100 text-red-700 text-xs">
+          ⚠️ This roll does not fully recover the previous loss.
+          <br />
+          You still need{" "}
+          <strong>
+            ${Math.abs(metrics.net + rollSnapshot.netPremium).toFixed(2)}
+          </strong>{" "}
+          to break even.
+        </div>
+      )}
 
       <button
         onClick={save}

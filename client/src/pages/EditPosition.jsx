@@ -3,9 +3,12 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { useParams } from "react-router-dom";
 import PositionEditor from "../components/PositionEditor";
+import { useLocation } from "react-router-dom";
 
 export default function EditPosition() {
   const { id } = useParams();          // ✅ ID real de la URL
+  const location = useLocation();
+  const isRoll = new URLSearchParams(location.search).get("roll") === "true";
   const [position, setPosition] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -25,7 +28,12 @@ export default function EditPosition() {
   }, [id]);
 
   const saveChanges = async (payload) => {
-    await axios.put(`/api/positions/${id}`, payload);
+    if (isRoll) {
+      await axios.post(`/api/positions/${id}/roll`, payload);
+    } else {
+      await axios.put(`/api/positions/${id}`, payload);
+    }
+
     window.location.href = "/positions";
   };
 
@@ -36,6 +44,7 @@ export default function EditPosition() {
       mode="edit"
       initialData={position}
       onSave={saveChanges}
+      isRoll={isRoll}
     />
   );
 }

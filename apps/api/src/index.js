@@ -1,6 +1,16 @@
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
+console.log("🔥 FINNHUB_API_KEY LOADED:", process.env.FINNHUB_API_KEY);
+
 import express from "express";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -10,20 +20,17 @@ import http from "http";
 import { initSocket } from "./utils/socket.js";
 import { authLimiter } from "./middleware/rateLimit.js";
 
+import newsRoutes from "./routes/news.js";
 import authRoutes from "./routes/auth.js";
 import adminRoutes from "./routes/admin.js";
-
 import watchlistRoutes from "./routes/watchlist.js";
 import marketLogoRoutes from "./routes/marketLogo.js";
-
 import marketDataRoutes from "./routes/marketData.js";
 import finvizRoutes from "./routes/finviz.js";
 import positionsRoutes from "./routes/positions.js";
 import optionsRoutes from "./routes/options.js";
 import tradierRoutes from "./routes/tradier.js";
 import symbolsRoutes from "./routes/symbols.js";
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -68,6 +75,7 @@ app.use("/api/finviz", finvizRoutes);
 app.use("/api/options", optionsRoutes);
 app.use("/api/tradier", tradierRoutes);
 app.use("/api/symbols", symbolsRoutes);
+app.use("/api/news", newsRoutes);
 
 /* ============================================================
    WATCHLIST + LOGOS

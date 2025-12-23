@@ -3,6 +3,9 @@ import express from "express";
 import Position from "../models/Position.js";
 import { getOccSymbolsFromLegs } from "../utils/positionUtils.js";
 import { getOptionQuote } from "../services/tradier.js";
+import { recordCashFlow } from "../services/cashflowService.js";
+import PositionCashFlow from "../models/PositionCashFlow.js";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
@@ -18,7 +21,7 @@ function emitChange(req, type, data = null) {
 ============================================================ */
 router.get("/", async (req, res) => {
   try {
-    const filter = { ...req.query };
+    const filter = { ...req.query, archived: { $ne: true } };
     const positions = await Position.find(filter).sort({ openDate: -1 });
     res.json({ success: true, data: positions });
   } catch (err) {
@@ -31,8 +34,10 @@ router.get("/", async (req, res) => {
 ============================================================ */
 router.get("/stats", async (req, res) => {
   try {
-    const filter = { ...req.query };
-    if (!filter.status) filter.status = "Closed";
+    const filter = { ...req.query, archived: { $ne: true } };
+    if (!filter.status) {
+      filter.status = "Closed";
+    }
 
     const positions = await Position.find(filter);
     const total = positions.length;
@@ -67,7 +72,7 @@ router.get("/stats", async (req, res) => {
 router.get("/summary-by-strategy", async (req, res) => {
   try {
     const resumen = await Position.aggregate([
-      { $match: { status: "Closed" } },
+      { $match: { status: "Closed", archived: { $ne: true } } },
       {
         $group: {
           _id: "$strategy",
@@ -99,7 +104,7 @@ router.get("/summary-by-strategy", async (req, res) => {
 router.get("/summary-by-symbol", async (req, res) => {
   try {
     const resumen = await Position.aggregate([
-      { $match: { status: "Closed" } },
+      { $match: { status: "Closed", archived: { $ne: true } } },
       {
         $group: {
           _id: "$symbol",
@@ -131,7 +136,13 @@ router.get("/summary-by-symbol", async (req, res) => {
 router.get("/summary-by-month", async (req, res) => {
   try {
     const resumen = await Position.aggregate([
-      { $match: { status: "Closed", closeDate: { $ne: null } } },
+      {
+        $match: {
+          status: "Closed",
+          archived: { $ne: true },
+          closeDate: { $ne: null },
+        }
+      },
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m", date: "$closeDate" } },
@@ -161,7 +172,7 @@ router.get("/summary-by-month", async (req, res) => {
 router.get("/open-summary", async (req, res) => {
   try {
     const resumen = await Position.aggregate([
-      { $match: { status: "Open" } },
+      { $match: { status: "Open", archived: { $ne: true } } },
       {
         $group: {
           _id: { strategy: "$strategy", symbol: "$symbol" },
@@ -187,6 +198,197 @@ router.get("/open-summary", async (req, res) => {
 });
 
 
+/* ============================================================
+   🔁 7.a ROLL POSITION — roll profesional estilo Webull
+============================================================ */
+router.post("/:id/roll", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 👉 Datos del roll
+    const {
+      newPosition,   // objeto completo de la nueva posición
+      rollOutCost,   // costo de cerrar la vieja (positivo)
+      rollInCredit,  // crédito (+) o débito (-) de la nueva
+    } = req.body;
+
+    if (
+      !newPosition ||
+      !Number.isFinite(rollOutCost) ||
+      !Number.isFinite(rollInCredit)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "newPosition, rollOutCost y rollInCredit son obligatorios",
+      });
+    }
+
+    /* ======================================================
+       1️⃣ Buscar posición original
+    ====================================================== */
+    const oldPosition = await Position.findById(id);
+    if (!oldPosition) {
+      return res.status(404).json({
+        success: false,
+        error: "Posición original no encontrada",
+      });
+    }
+
+    if (oldPosition.status !== "Open") {
+      return res.status(400).json({
+        success: false,
+        error: "Solo se pueden rolar posiciones abiertas",
+      });
+    }
+
+
+    /* ======================================================
+       2️⃣ Preparar grupo de roll (vínculo financiero)
+    ====================================================== */
+    const rollGroupId = new mongoose.Types.ObjectId();
+
+
+    /* ======================================================
+       3️⃣ Crear nueva posición (rolled in)
+    ====================================================== */
+    const rolledPosition = new Position({
+      ...newPosition,
+      status: "Open",
+      notes: "Rolled position",
+      openDate: new Date(),
+
+      // 🔁 vínculo del roll
+      rolledFrom: oldPosition._id,
+      rollGroupId,
+
+      // 💰 PREMIUM REAL DE LA NUEVA POSICIÓN
+      netPremium: Number(rollInCredit),
+
+      // 🧠 acumulados (se recalculan luego)
+      cumulativeRealizedPnL: 0,
+      cumulativeBreakEven: null,
+    });
+
+    await rolledPosition.save();
+    
+
+    /* ======================================================
+       4️⃣ CASHFLOW REAL — CIERRE DE POSICIÓN VIEJA
+       (la pérdida o ganancia se realiza aquí)
+    ====================================================== */
+    await recordCashFlow({
+      position: oldPosition,
+      type: "CLOSE_PREMIUM",
+      amount: -Math.abs(rollOutCost), // SIEMPRE cash out
+      relatedPositionId: rolledPosition._id,
+      rollGroupId,
+      description: "Roll: close old position",
+    });
+
+    /* ======================================================
+       5️⃣ CASHFLOW REAL — APERTURA DE NUEVA POSICIÓN
+    ====================================================== */
+    await recordCashFlow({
+      position: rolledPosition,
+      type: "OPEN_PREMIUM",
+      amount: Number(rollInCredit), // + crédito / - débito
+      relatedPositionId: oldPosition._id,
+      rollGroupId,
+      description: "Roll: open new position",
+    });
+
+    /* ======================================================
+       6️⃣ CALCULAR REALIZED PnL DE LA POSICIÓN VIEJA
+       (SOLO hasta este roll)
+    ====================================================== */
+    const flows = await PositionCashFlow.find({
+      positionId: oldPosition._id,
+      rollGroupId: rollGroupId,
+    });
+
+    const realizedPnL = flows.reduce(
+      (sum, f) => sum + (f.amount || 0),
+      0
+    );
+
+    /* ======================================================
+       7️⃣ Marcar posición vieja como ROLLED (financieramente cerrada)
+    ====================================================== */
+    oldPosition.status = "Rolled";
+    oldPosition.archived = true;
+    oldPosition.closeDate = new Date();
+    oldPosition.realizedPnL = Number(realizedPnL.toFixed(2));
+    oldPosition.rollGroupId = rollGroupId;
+
+    oldPosition.closedStatus =
+      oldPosition.realizedPnL > 0.01
+        ? "win"
+        : oldPosition.realizedPnL < -0.01
+        ? "loss"
+        : "breakeven";
+
+    // ❌ No inventamos precios en un roll
+    oldPosition.exitPrice = undefined;
+    oldPosition.marketValue = undefined;
+
+    await oldPosition.save();
+
+    /* ======================================================
+      8️⃣ CALCULAR ACUMULADOS REALES DEL ROLL (CORRECTO)
+      - cumulativeRealizedPnL = pérdidas/ganancias históricas
+      - cumulativeBreakEven = cuánto debo recuperar para quedar en cero
+    ====================================================== */
+
+    // 🔴 Si la posición vieja ya venía de otro roll, arrastramos su historial
+    const prevCumulativeRealized = Number(
+      oldPosition.cumulativeRealizedPnL || 0
+    );
+
+    // 🔴 Sumamos el realized PnL del cierre actual
+    const newCumulativeRealized = Number(
+      (prevCumulativeRealized + realizedPnL).toFixed(2)
+    );
+
+    // 🔴 Break-even REAL (lo que el trader necesita recuperar)
+    const cumulativeBreakEven = Math.abs(newCumulativeRealized);
+
+    // 🔴 Guardar acumulados en la NUEVA posición
+    rolledPosition.cumulativeRealizedPnL = newCumulativeRealized;
+    rolledPosition.cumulativeBreakEven = Number(
+      cumulativeBreakEven.toFixed(2)
+    );
+
+    // 💾 Guardar cambios
+    await rolledPosition.save();
+
+
+    /* ======================================================
+       8️⃣ Emitir eventos en tiempo real
+    ====================================================== */
+    emitChange(req, "rolled_out", oldPosition);
+    emitChange(req, "rolled_in", rolledPosition);
+
+    /* ======================================================
+       9️⃣ Respuesta final
+    ====================================================== */
+    res.json({
+      success: true,
+      data: {
+        oldPosition,
+        newPosition: rolledPosition,
+        rollGroupId,
+      },
+    });
+
+  } catch (err) {
+    console.error("❌ Error al rolar posición:", err.message);
+    res.status(500).json({
+      success: false,
+      error: "Error al rolar la posición",
+    });
+  }
+});
+
 
 /* ============================================================
    🔥 7.b CLOSE POSITION — cierre real estilo Webull
@@ -207,6 +409,16 @@ router.put("/:id/close", async (req, res) => {
     const pos = await Position.findById(id);
     if (!pos) {
       return res.status(404).json({ success: false, error: "Posición no encontrada" });
+    }
+
+    // ========================================
+    // 🛑 FIX 2 — Evitar doble cierre
+    // ========================================
+    if (pos.status !== "Open") {
+      return res.status(400).json({
+        success: false,
+        error: "Solo se pueden cerrar posiciones abiertas",
+      });
     }
 
     // ========================================
@@ -261,6 +473,30 @@ router.put("/:id/close", async (req, res) => {
 
     await pos.save();
 
+    // ========================================
+    // 🔥 CASHFLOW AUTOMÁTICO — CLOSE
+    // ========================================
+
+    // Cash que sale o entra al cerrar.
+    // Es el cashflow del cierre, NO el PnL.
+    // 🛑 FIX 3 — Evitar cashflow duplicado
+    // ========================================
+    const closeCashFlow = Number((finalMarketValue * -1).toFixed(2));
+
+    const exists = await PositionCashFlow.findOne({
+      positionId: pos._id,
+      type: "CLOSE_PREMIUM",
+    });
+
+    if (!exists && closeCashFlow !== 0) {
+      await recordCashFlow({
+        position: pos,
+        type: "CLOSE_PREMIUM",
+        amount: closeCashFlow,
+        description: "Position closed",
+      });
+    }
+
     // Emitir evento realtime
     emitChange(req, "closed", pos);
 
@@ -297,6 +533,29 @@ router.get("/:id/quotes", async (req, res) => {
   }
 });
 
+/* ============================================================
+   📦 ARCHIVE POSITION (no delete)
+============================================================ */
+router.put("/:id/archive", async (req, res) => {
+  try {
+    const pos = await Position.findByIdAndUpdate(
+      req.params.id,
+      { archived: true },
+      { new: true }
+    );
+
+    if (!pos) {
+      return res.status(404).json({ success: false, error: "Posición no encontrada" });
+    }
+
+    emitChange(req, "archived", pos);
+
+    res.json({ success: true, data: pos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 /* ============================================================
    🔹 7. CRUD COMPLETO (GET, POST, PUT, DELETE)
@@ -315,8 +574,26 @@ router.post("/", async (req, res) => {
   try {
     const position = new Position(req.body);
     await position.save();
+
+    // ========================================
+    // 🔥 CASHFLOW AUTOMÁTICO — OPEN
+    // ========================================
+    if (
+      position.status === "Open" &&
+      typeof position.netPremium === "number" &&
+      position.netPremium !== 0
+    ) {
+      await recordCashFlow({
+        position,
+        type: "OPEN_PREMIUM",
+        amount: position.netPremium, // + crédito / - débito
+        description: "Position opened",
+      });
+    }
+
     res.status(201).json({ success: true, data: position });
     emitChange(req, "created", position);
+
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }

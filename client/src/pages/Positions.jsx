@@ -1,11 +1,11 @@
 // src/pages/Positions.jsx
 import React, { useEffect, useState, useMemo } from "react";
 import axios from "axios";
-import { XCircle } from "lucide-react";
+import { XCircle, MoreVertical } from "lucide-react";
 import { io } from "socket.io-client";
 
 import { buildOptionarUrlFromPosition } from "../utils/optionarLink";
-import { Eye } from "lucide-react";  // icono profesional
+import { Eye } from "lucide-react"; // icono profesional
 
 // 🧮 Utils centralizados
 import {
@@ -29,9 +29,25 @@ const socket = io(import.meta.env.VITE_API_WS_URL || "http://localhost:4000", {
   path: "/ws",
 });
 
+// ✅ helper: formatea fechas vengan como Date o string
+function fmtDateYYYYMMDD(d) {
+  if (!d) return "—";
+  try {
+    const dt = d instanceof Date ? d : new Date(d);
+    if (Number.isNaN(dt.getTime())) return "—";
+    return dt.toISOString().slice(0, 10);
+  } catch {
+    return "—";
+  }
+}
+
 function Positions() {
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [openMenuId, setOpenMenuId] = useState(null);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const [showRollModal, setShowRollModal] = useState(false);
+  const [rollingPosition, setRollingPosition] = useState(null);
 
   // === 1️⃣ Cargar posiciones desde el backend ===
   const fetchPositions = async () => {
@@ -60,6 +76,12 @@ function Positions() {
     return () => socket.off("priceUpdate");
   }, []);
 
+  useEffect(() => {
+    const closeMenu = () => setOpenMenuId(null);
+    window.addEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu);
+  }, []);
+
   // === 3️⃣ Hook Tradier Live (actualiza precios reales de opciones) ===
   const livePositions = useLiveQuotes(positions, 5000); // 5s refresh
 
@@ -80,8 +102,40 @@ function Positions() {
           new Date(a.legs?.[0]?.expiration || 0) -
           new Date(b.legs?.[0]?.expiration || 0)
       ),
-      [livePositions, forceRefresh] // ✅ nuevo: para que se recalcule cada 5s
+    [livePositions, forceRefresh] // ✅ nuevo: para que se recalcule cada 5s
   );
+
+  // ✅ OJO: ESTE useMemo DEBE IR ANTES DEL "return loading" (Rules of Hooks)
+  // 💰 Total Open P&L en vivo
+  const totalOpenPnL = useMemo(() => {
+    return sortedPositions
+      .filter((p) => p.status === "Open")
+      .reduce((sum, p) => {
+        const m = calculatePositionMetrics(p);
+        return sum + (m.openPnL || 0);
+      }, 0);
+  }, [sortedPositions]);
+  
+  // 📊 Header portfolio stats (FIX)
+  const headerStats = useMemo(() => {
+    let openPnL = 0;
+    let marketValue = 0;
+    let openCount = 0;
+
+    sortedPositions.forEach((p) => {
+      if (p.status !== "Open") return;
+      const m = calculatePositionMetrics(p);
+      openPnL += m.openPnL || 0;
+      marketValue += m.marketValue || 0;
+      openCount++;
+    });
+
+    return {
+      openPnL,
+      marketValue,
+      openCount,
+    };
+  }, [sortedPositions]);
 
   if (loading)
     return (
@@ -91,16 +145,53 @@ function Positions() {
   // === 5️⃣ Render ===
   return (
     <div className="p-6 bg-white min-h-screen">
-      {/* HEADER */}
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">📊 Positions</h1>
-        <button
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
-          onClick={() => (window.location.href = "/positions/new")}
-        >
-          + New Position
-        </button>
-      </div>
+        <div className="flex justify-between items-center mb-4">
+          {/* LEFT — Title + Open Positions pill */}
+          <div className="flex items-center gap-4">
+            {/* Title */}
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+              Positions
+            </h1>
+
+            {/* Divider */}
+            <span className="h-6 w-px bg-gray-300"></span>
+
+            {/* Open Positions Pill */}
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 text-sm">
+              <span className="text-gray-600">
+                Open Positions
+              </span>
+
+              <span className="font-semibold text-gray-900">
+                {headerStats.openCount}
+              </span>
+
+              {/* PnL */}
+              <span
+                className={`flex items-center gap-0.5 font-semibold ${
+                  headerStats.openPnL >= 0 ? "text-green-600" : "text-red-600"
+                }`}
+              >
+                <i
+                  className={`bi ${
+                    headerStats.openPnL >= 0
+                      ? "bi-arrow-up-short"
+                      : "bi-arrow-down-short"
+                  } text-lg leading-none`}
+                ></i>
+                {fmt(Math.abs(headerStats.openPnL))}
+              </span>
+            </div>
+          </div>
+
+          {/* RIGHT — Button */}
+          <button
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
+            onClick={() => (window.location.href = "/positions/new")}
+          >
+            + New Position
+          </button>
+        </div>
 
       {/* TABLE */}
       <div className="overflow-x-auto shadow border rounded-lg">
@@ -112,9 +203,9 @@ function Positions() {
               <th>Strategy</th>
               <th>Qty</th>
               <th>Market Value</th>
-              <th>Open P&L</th>
-              <th>Open P&L %</th>
-              <th>Day’s P&L</th>
+              <th>Open P&amp;L</th>
+              <th>Open P&amp;L %</th>
+              <th>Day’s P&amp;L</th>
               <th>Last Price</th>
               <th>Entry Price</th>
               <th>Total Cost</th>
@@ -127,56 +218,66 @@ function Positions() {
 
           <tbody className="divide-y">
             {sortedPositions.map((pos) => {
-              const m = calculatePositionMetrics(pos);
+              const m =
+              pos.status === "Open"
+                ? calculatePositionMetrics(pos)
+                : {
+                    marketValue: 0,
+                    openPnL: 0,
+                    openPnLPct: 0,
+                    daysPnL: 0,
+                    last: null,
+                    entry: null,
+                    totalCost: pos.totalCost ?? 0,
+                    breakEven: null,
+                    maxProfit: null,
+                    maxLoss: null,
+                    revenue: null,
+                  };
               const exp = earliestExp(pos.legs);
               const brokerName = (pos.broker || "").trim();
+              const isRolledIn = pos.status === "Open" && pos.rolledFrom;
 
               return (
                 <React.Fragment key={pos._id}>
-                  {/* === MAIN ROW === */}
-                  {/* === MAIN ROW (Clickable + Double-Click to Edit) === */}
-                    <tr
-                      onDoubleClick={() => (window.location.href = `/positions/${pos._id}/edit`)}
-                      className={`transition cursor-pointer ${
-                        pos.status === "Closed"
-                          ? "bg-gray-100 opacity-70"
-                          : "hover:bg-gray-50"
-                      }`}
-                    >
+                  {/* === MAIN ROW (Double-Click to Edit) === */}
+                  <tr
+                    onDoubleClick={() =>
+                      (window.location.href = `/positions/${pos._id}/edit`)
+                    }
+                    className={`relative transition cursor-pointer ${
+                      pos.status === "Closed"
+                        ? "bg-gray-100 opacity-70"
+                        : "hover:bg-gray-50"
+                    }`}
+                  >
                     {/* Action */}
-                    <td className="px-3 py-2">
-                      <button
-                        onClick={async () => {
-                          const value = prompt("Enter exit price to close the position:");
-                          if (!value) return;
+                    <td className="w-[42px]">
+                      <div className="flex items-center justify-center h-full">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
 
-                          const exitPrice = parseFloat(value);
-                          if (isNaN(exitPrice)) {
-                            alert("Invalid number");
-                            return;
-                          }
+                            const rect = e.currentTarget.getBoundingClientRect();
 
-                          try {
-                            await axios.put(`/api/positions/${pos._id}/close`, {
-                              exitPrice,
+                            setMenuPos({
+                              x: rect.right + 4,
+                              y: rect.bottom + 4,
                             });
 
-                            fetchPositions(); // recargar despues de cerrar
-                          } catch (err) {
-                            console.error("Error closing position", err);
-                            alert("Error closing position");
-                          }
-                        }}
-                        className="text-red-600 hover:text-red-800 flex items-center gap-1"
-                      >
-                        <XCircle size={16} /> Close
-                      </button>
+                            setOpenMenuId(openMenuId === pos._id ? null : pos._id);
+                          }}
+                          className="text-gray-400 hover:text-gray-700 p-1 rounded-md hover:bg-gray-100"
+                          title="Actions"
+                        >
+                          <MoreVertical size={16} />
+                        </button>
+                      </div>
                     </td>
 
                     {/* Symbol + Broker */}
                     <td className="px-3 py-2">
                       <div className="flex items-start gap-2">
-
                         {/* ICONO DEL BROKER */}
                         {brokerIcons[brokerName] ? (
                           <img
@@ -193,7 +294,6 @@ function Positions() {
 
                         {/* SYMBOL + TAGS */}
                         <div className="flex flex-col leading-tight">
-
                           {/* SYMBOL + EXPIRATION */}
                           <span className="font-semibold">
                             {pos.symbol}{" "}
@@ -204,59 +304,141 @@ function Positions() {
 
                           {/* === TAGS EN UNA SOLA FILA === */}
                           <div className="flex gap-2 mt-1">
-
                             {/* WIN / LOSS / BREAKEVEN */}
-                            {pos.status === "Closed" && pos.closedStatus === "win" && (
-                              <span className="bg-green-100 text-green-700 px-2 py-[1px] rounded text-xs">
-                                WIN
-                              </span>
-                            )}
+                            {pos.status === "Closed" &&
+                              pos.closedStatus === "win" && (
+                                <span className="bg-green-100 text-green-700 px-2 py-[1px] rounded text-xs">
+                                  WIN
+                                </span>
+                              )}
 
-                            {pos.status === "Closed" && pos.closedStatus === "loss" && (
-                              <span className="bg-red-100 text-red-700 px-2 py-[1px] rounded text-xs">
-                                LOSS
-                              </span>
-                            )}
+                            {pos.status === "Closed" &&
+                              pos.closedStatus === "loss" && (
+                                <span className="bg-red-100 text-red-700 px-2 py-[1px] rounded text-xs">
+                                  LOSS
+                                </span>
+                              )}
 
-                            {pos.status === "Closed" && pos.closedStatus === "breakeven" && (
-                              <span className="bg-gray-200 text-gray-700 px-2 py-[1px] rounded text-xs">
-                                BREAKEVEN
-                              </span>
-                            )}
+                            {pos.status === "Closed" &&
+                              pos.closedStatus === "breakeven" && (
+                                <span className="bg-gray-200 text-gray-700 px-2 py-[1px] rounded text-xs">
+                                  BREAKEVEN
+                                </span>
+                              )}
 
                             {/* STATUS GENERAL */}
                             {pos.status && (
-                              <span
-                                className={`px-2 py-[1px] rounded text-xs font-semibold
-                                  ${
-                                    pos.status === "Open"
-                                      ? "bg-blue-100 text-blue-700"
-                                    : pos.status === "Closed"
-                                      ? "bg-gray-200 text-gray-700"
-                                    : pos.status === "Rolled"
-                                      ? "bg-purple-100 text-purple-700"
-                                    : pos.status === "Expired"
-                                      ? "bg-orange-100 text-orange-700"
-                                    : "bg-gray-200 text-gray-700"
-                                  }`}
-                              >
-                                {pos.status.toUpperCase()}
-                              </span>
-                            )}
+                              <div className="flex flex-col">
+                                <span
+                                  className={`px-2 py-[1px] rounded text-xs font-semibold w-fit
+                                    ${
+                                      pos.status === "Open"
+                                        ? "bg-blue-100 text-blue-700"
+                                        : pos.status === "Closed"
+                                        ? "bg-gray-200 text-gray-700"
+                                        : pos.status === "Rolled"
+                                        ? "bg-purple-100 text-purple-700"
+                                        : pos.status === "Expired"
+                                        ? "bg-orange-100 text-orange-700"
+                                        : "bg-gray-200 text-gray-700"
+                                    }`}
+                                >
+                                  {pos.status.toUpperCase()}
+                                </span>
 
+                                {pos.status === "Rolled" && pos.closeDate && (
+                                  <span className="text-[11px] text-gray-500 mt-0.5">
+                                    Rolled on {fmtDateYYYYMMDD(pos.closeDate)}
+                                  </span>
+                                )}
+                                {/* 🔁 ROLLED-IN BADGE */}
+                                  {isRolledIn && (
+                                    <span
+                                      className="bg-purple-100 text-purple-700 px-2 py-[1px] rounded text-xs font-semibold"
+                                      title="This position comes from a roll"
+                                    >
+                                      ROLLED FROM
+                                    </span>
+                                  )}
+                              </div>
+                            )}
                           </div>
                         </div>
+                        {openMenuId && (
+                          <div
+                            className="fixed z-50 w-36 bg-white border rounded-md shadow-lg text-sm"
+                            style={{ top: menuPos.y, left: menuPos.x }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              onClick={() => {
+                                window.location.href = `/positions/${openMenuId}/edit`;
+                              }}
+                              className="w-full text-left px-3 py-2 hover:bg-gray-100"
+                            >
+                              ✏️ Edit
+                            </button>
+
+                            {pos.status === "Open" && (
+                              <button
+                                onClick={async () => {
+                                  const value = prompt("Enter exit price to close the position:");
+                                  if (!value) return;
+
+                                  const exitPrice = parseFloat(value);
+                                  if (isNaN(exitPrice)) return alert("Invalid number");
+
+                                  try {
+                                    await axios.put(`/api/positions/${openMenuId}/close`, { exitPrice });
+                                    fetchPositions();
+                                    setOpenMenuId(null);
+                                  } catch {
+                                    alert("Error closing position");
+                                  }
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-gray-100 text-red-600"
+                              >
+                                ❌ Close
+                              </button>
+                            )}
+                            {pos.status === "Open" && (
+                              <button
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  window.location.href = `/positions/${pos._id}/edit?roll=true`;
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-gray-100 text-purple-600"
+                              >
+                                🔁 Roll
+                              </button>
+                            )}
+                            <button
+                              onClick={async () => {
+                                if (!confirm("Archive this position?")) return;
+
+                                try {
+                                  await axios.put(`/api/positions/${openMenuId}/archive`);
+                                  fetchPositions();
+                                  setOpenMenuId(null);
+                                } catch {
+                                  alert("Error archiving position");
+                                }
+                              }}
+                              className="w-full text-left px-3 py-2 hover:bg-gray-100 text-gray-600"
+                            >
+                              🗂️ Archive
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </td>
-
 
                     {/* Strategy (auto detectada) */}
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
-
                         {/* Strategy Badge */}
                         <span className="bg-blue-50 text-blue-700 px-2 py-[2px] rounded-md">
-                          {m.strategyDetected || pos.strategy || "—"}
+                          {pos.strategy || m.strategyDetected || "—"}
                         </span>
 
                         {/* Optionar Eye Icon */}
@@ -269,12 +451,13 @@ function Positions() {
                         >
                           <Eye size={17} />
                         </a>
-
                       </div>
                     </td>
 
                     {/* Quantity */}
-                    <td className="px-3 py-2">{m.qty}</td>
+                    <td className="px-3 py-2">
+                      {pos.status === "Open" ? m.qty : pos.legs?.[0]?.quantity ?? "—"}
+                    </td>
 
                     {/* Market Value */}
                     <td className="px-3 py-2 text-gray-700">
@@ -315,7 +498,20 @@ function Positions() {
 
                     {/* Metrics */}
                     <td className="px-3 py-2">
-                      {m.breakEven ? `$${m.breakEven.toFixed(2)}` : "—"}
+                      {pos.cumulativeBreakEven != null ? (
+                        <div className="flex flex-col leading-tight">
+                          <span className="font-semibold text-purple-700">
+                            ${pos.cumulativeBreakEven.toFixed(2)}
+                          </span>
+                          <span className="text-[11px] text-gray-500">
+                            Roll-adjusted BE
+                          </span>
+                        </div>
+                      ) : m.breakEven ? (
+                        `$${m.breakEven.toFixed(2)}`
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       {m.maxProfit ? fmt(m.maxProfit) : "—"}
@@ -345,7 +541,7 @@ function Positions() {
                         </td>
                         <td className="px-3 py-1">
                           {leg.optionType} ${leg.strike} · Exp:{" "}
-                          {leg.expiration?.slice(0, 10) ?? "—"}
+                          {fmtDateYYYYMMDD(leg.expiration)}
                         </td>
                         <td className="px-3 py-1">{lm.qty}</td>
                         <td className="px-3 py-1 text-gray-700">
@@ -376,11 +572,11 @@ function Positions() {
                           {fmt(lm.last)}
                         </td>
                         <td className="px-3 py-1">{fmt(lm.entry)}</td>
-                        <td className="px-3 py-1">{fmt(lm.totalCost)}</td>                        
+                        <td className="px-3 py-1">{fmt(lm.totalCost)}</td>
                       </tr>
-                      
                     );
                   })}
+
                   {/* === GREEKS RESUMEN POR POSICIÓN === */}
                   <tr className="bg-white text-xs text-gray-600 italic">
                     <td></td>
@@ -390,9 +586,8 @@ function Positions() {
                         const calcGreek = (key, decimals = 5) => {
                           let total = 0;
 
-                          pos.legs.forEach((leg) => {
+                          (pos.legs || []).forEach((leg) => {
                             const greeks = leg.greeks || {};
-                            // ⚡ Usa el valor completo (sin redondeo, sin parseo truncado)
                             const val = parseFloat(greeks[key]);
                             const qty = parseFloat(leg.quantity ?? 1);
                             if (isNaN(val)) return;
@@ -402,18 +597,19 @@ function Positions() {
 
                             let sign = 0;
 
-                            // 🧮 Reglas correctas:
                             // Call BUY = +, Call SELL = -, Put BUY = -, Put SELL = +
-                            if (type === "call" && action.includes("buy")) sign = +1;
-                            if (type === "call" && action.includes("sell")) sign = -1;
-                            if (type === "put" && action.includes("buy")) sign = -1;
-                            if (type === "put" && action.includes("sell")) sign = +1;
+                            if (type === "call" && action.includes("buy"))
+                              sign = +1;
+                            if (type === "call" && action.includes("sell"))
+                              sign = -1;
+                            if (type === "put" && action.includes("buy"))
+                              sign = -1;
+                            if (type === "put" && action.includes("sell"))
+                              sign = +1;
 
-                            // Usa el valor completo sin redondear ni dividir por 100
                             total += val * qty * sign;
                           });
 
-                          // 🔹 Mantiene precisión total (10 decimales) y muestra valor absoluto (positivo)
                           return Math.abs(total).toFixed(4);
                         };
 
@@ -422,7 +618,7 @@ function Positions() {
                           let totalIV = 0;
                           let totalQty = 0;
 
-                          pos.legs.forEach((leg) => {
+                          (pos.legs || []).forEach((leg) => {
                             const iv = parseFloat(leg.impliedVolatility);
                             const qty = Math.abs(parseFloat(leg.quantity ?? 1));
                             if (!isNaN(iv)) {
@@ -432,9 +628,9 @@ function Positions() {
                           });
 
                           if (totalQty === 0) return "—";
-                          return (totalIV / totalQty).toFixed(2) + "%"; // ✅ Ya viene en porcentaje
+                          return (totalIV / totalQty).toFixed(2) + "%";
                         };
-                        // === Render Greeks ===
+
                         return (
                           <div className="flex gap-6 text-sm text-gray-600 italic px-3 py-1">
                             <span>Delta: {calcGreek("delta")}</span>
@@ -445,14 +641,13 @@ function Positions() {
                       })()}
                     </td>
                   </tr>
-
                 </React.Fragment>
               );
             })}
           </tbody>
         </table>
       </div>
-    </div>
+    </div>    
   );
 }
 

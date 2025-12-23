@@ -168,7 +168,7 @@ function TickerDetails() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-300 relative">
       {/* ====== Collapsible Search Icon (minimal improved) ====== */}
-      <div id="searchBar" className="fixed top-[80px] right-5 z-50">
+      <div id="searchBar" className="fixed bottom-6 right-6 z-50">
         <motion.div
           className={`flex items-center shadow-lg rounded-full border border-gray-300 dark:border-gray-700 
                       overflow-hidden bg-white dark:bg-gray-800 transition-all duration-300 
@@ -227,9 +227,24 @@ function TickerDetails() {
       </div>
 
       {/* ====== Symbol Info ====== */}
-      <header className="sticky top-0 z-20 backdrop-blur-md bg-white/90 dark:bg-gray-900/95 border-b border-gray-200 dark:border-gray-700">
-        <div className="max-w-[1600px] mx-auto px-6 py-4">
-          <TradingViewSymbolInfo />
+      <header className="relative z-10 bg-gray-50 dark:bg-gray-900">
+        <div className="max-w-[1600px] mx-auto px-6 pt-6">
+          <div
+            className="
+              rounded-xl
+              overflow-hidden
+              bg-gray-50 dark:bg-gray-900
+
+              [&_iframe]:bg-transparent
+              [&_iframe]:border-0
+              [&_iframe]:shadow-none
+
+              [&_div]:bg-transparent
+              [&_section]:bg-transparent
+            "
+          >
+            <TradingViewSymbolInfo />
+          </div>
         </div>
       </header>
 
@@ -239,8 +254,7 @@ function TickerDetails() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white dark:bg-gray-800 shadow-lg rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700"
-        >
+          className="bg-white dark:bg-gray-800 shadow-lg rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
           <div id={chartContainerId} style={{ height: "600px", width: "100%" }} />
         </motion.div>
 
@@ -269,8 +283,7 @@ function TickerDetails() {
           <motion.div
             initial={{ opacity: 0, x: -30 }}
             animate={{ opacity: 1, x: 0 }}
-            className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-lg border shadow p-6"
-          >
+            className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-lg border shadow p-6">
             <h3 className="text-lg font-semibold mb-4 text-gray-800 dark:text-gray-100">
               📊 Performance Summary ({symbol.toUpperCase()})
             </h3>
@@ -332,7 +345,7 @@ function TickerDetails() {
             <h3 className="text-lg font-semibold mb-3 text-gray-800 dark:text-gray-100">
               📰 Latest Market News ({symbol.toUpperCase()})
             </h3>
-            <div className="max-h-[600px] overflow-y-auto">
+            <div className="h-[600px] overflow-y-auto pr-4">
               <NewsFeed symbol={symbol} />
             </div>
           </motion.div>
