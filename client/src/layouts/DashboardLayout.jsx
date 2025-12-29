@@ -19,6 +19,7 @@ export default function DashboardLayout() {
   const navLinks = [
     { to: "/", label: "Dashboard" },
     { to: "/positions", label: "Positions" },
+    { to: "/performance", label: "Performance" },
     { to: "/ticker/SPY", label: "Ticker Details" },
   ];
 
@@ -81,8 +82,12 @@ export default function DashboardLayout() {
             <h2 className="text-xl font-semibold text-gray-900 truncate">
               {isActive("/")
                 ? "Dashboard Overview"
-                : location.pathname.includes("positions")
+                : location.pathname.startsWith("/positions")
                 ? "Your Positions"
+                : location.pathname.startsWith("/performance")
+                ? "Performance"
+                : location.pathname.startsWith("/ticker")
+                ? "Ticker Details"
                 : "MyInvesting"}
             </h2>
 

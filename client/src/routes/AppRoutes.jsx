@@ -7,6 +7,7 @@ import TickerDetails from "../pages/TickerDetails";
 import Positions from "../pages/Positions";
 import NewPosition from "../pages/NewPosition";
 import EditPosition from "../pages/EditPosition";
+import Performance from "../pages/Performance";
 
 // 🔥 Nuevas rutas de usuario
 import Login from "../pages/Login";
@@ -32,6 +33,7 @@ export default function AppRoutes() {
         <Route path="/positions" element={<Positions />} />
         <Route path="/positions/new" element={<NewPosition />} />
         <Route path="/positions/:id/edit" element={<EditPosition />} />
+        <Route path="/performance" element={<Performance />} />
 
       </Route>
     </Routes>

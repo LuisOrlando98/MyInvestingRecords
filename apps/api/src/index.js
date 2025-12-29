@@ -28,6 +28,7 @@ import marketLogoRoutes from "./routes/marketLogo.js";
 import marketDataRoutes from "./routes/marketData.js";
 import finvizRoutes from "./routes/finviz.js";
 import positionsRoutes from "./routes/positions.js";
+import performanceRoutes from "./routes/performance.js";
 import optionsRoutes from "./routes/options.js";
 import tradierRoutes from "./routes/tradier.js";
 import symbolsRoutes from "./routes/symbols.js";
@@ -88,6 +89,7 @@ app.use("/api/market/logo", marketLogoRoutes);  // ✔ ESTA ES LA BUENA
 ============================================================ */
 app.use("/api/market", marketDataRoutes);
 app.use("/api/positions", positionsRoutes);
+app.use("/api/performance", performanceRoutes);
 
 /* ============================================================
    ERROR HANDLER
