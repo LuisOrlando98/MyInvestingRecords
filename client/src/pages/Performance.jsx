@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import axios from "axios";
 import { motion } from "framer-motion";
 
@@ -7,7 +7,31 @@ axios.defaults.baseURL =
 
 /* ============================================================
    📊 PERFORMANCE — Webull-style Analytics + Interactive Calendar
+   ✅ FIX: NO toISOString() (UTC bug). Uses local dateKey safely.
 ============================================================ */
+
+// --- Local DateKey helper (NO UTC) ---
+const dateKeyLocal = (dateLike) => {
+  const d = new Date(dateLike);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`; // YYYY-MM-DD in LOCAL time
+};
+
+const fmtMoney = (n) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(Number(n || 0));
+
+const fmtCompact = (n) =>
+  new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(Number(n || 0));
+
 export default function Performance() {
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -27,8 +51,15 @@ export default function Performance() {
   });
   const [selectedDay, setSelectedDay] = useState(null);
 
+  // cancel in-flight requests (performance)
+  const abortRef = useRef(null);
+
   /* ================= LOAD ================= */
-  const load = async () => {
+  const load = useCallback(async () => {
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     try {
       const { data } = await axios.get("/api/performance", {
@@ -37,31 +68,47 @@ export default function Performance() {
           from: from || undefined,
           to: to || undefined,
         },
+        signal: controller.signal,
       });
 
-      let tableRows = data.rows || [];
+      let tableRows = Array.isArray(data?.rows) ? data.rows : [];
 
+      // ✅ normalize each row with a stable day key (NO UTC)
+      tableRows = tableRows
+        .map((r) => ({
+          ...r,
+          // prefer backend-provided dateKey if exists, else compute safely
+          dateKey: r.dateKey || (r.date ? dateKeyLocal(r.date) : null),
+        }))
+        .filter((r) => r.dateKey);
+
+      // result filter
       if (result !== "ALL") {
         tableRows = tableRows.filter((r) => r.result === result);
       }
 
       setRows(tableRows);
-      setSummary(data.summary);
+      setSummary(data?.summary || null);
+    } catch (e) {
+      // ignore aborts
+      if (e?.name !== "CanceledError" && e?.code !== "ERR_CANCELED") {
+        console.error(e);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [debouncedSymbol, from, to, result]);
 
   /* ================= INITIAL LOAD ================= */
   useEffect(() => {
     load();
-  }, []);
+  }, []); // eslint-disable-line
 
   /* ================= DEBOUNCE SYMBOL ================= */
   useEffect(() => {
     const t = setTimeout(() => {
       setDebouncedSymbol(symbol.trim());
-    }, 300);
+    }, 250);
     return () => clearTimeout(t);
   }, [symbol]);
 
@@ -69,33 +116,40 @@ export default function Performance() {
   useEffect(() => {
     load();
     setSelectedDay(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSymbol, result, from, to]);
+  }, [debouncedSymbol, result, from, to, load]);
 
   /* ================= CALENDAR MAP ================= */
   const calendarMap = useMemo(() => {
     const map = {};
-    rows.forEach((r) => {
-      const d = new Date(r.date).toISOString().slice(0, 10);
-      map[d] = (map[d] || 0) + r.revenue;
-    });
+    for (const r of rows) {
+      const k = r.dateKey;
+      map[k] = (map[k] || 0) + Number(r.revenue || 0);
+    }
     return map;
   }, [rows]);
 
   /* ================= FILTER BY DAY ================= */
   const filteredRows = useMemo(() => {
     if (!selectedDay) return rows;
-    return rows.filter(
-      (r) => new Date(r.date).toISOString().slice(0, 10) === selectedDay
-    );
+    return rows.filter((r) => r.dateKey === selectedDay);
   }, [rows, selectedDay]);
 
-  const fmtMoney = (n) =>
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 2,
-    }).format(Number(n || 0));
+  /* ================= TABLE TOTALS (for footer / pills) ================= */
+  const totals = useMemo(() => {
+    let trades = 0;
+    let net = 0;
+    let wins = 0;
+    let losses = 0;
+    for (const r of filteredRows) {
+      trades += 1;
+      const rev = Number(r.revenue || 0);
+      net += rev;
+      if (r.result === "WIN") wins += 1;
+      if (r.result === "LOSS") losses += 1;
+    }
+    const winRate = trades ? (wins / trades) * 100 : 0;
+    return { trades, net, wins, losses, winRate };
+  }, [filteredRows]);
 
   /* ================= RENDER ================= */
   return (
@@ -105,22 +159,36 @@ export default function Performance() {
       className="max-w-[1600px] mx-auto p-6 space-y-6"
     >
       {/* ===== HEADER ===== */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Performance</h1>
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">Performance</h1>
+          <p className="text-sm text-gray-500">
+            Calendar P&L + trade analytics (fixed day bucketing)
+          </p>
+        </div>
 
-        <button
-          onClick={() => alert("Export logic coming next 🚀")}
-          className="h-9 px-4 rounded-full border text-sm font-semibold bg-white hover:bg-gray-50 transition"
-        >
-          Export
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => alert("Export logic coming next 🚀")}
+            className="h-9 px-4 rounded-full border text-sm font-semibold bg-white hover:bg-gray-50 transition shadow-sm"
+          >
+            Export
+          </button>
+
+          <button
+            onClick={load}
+            className="h-9 px-4 rounded-full border text-sm font-semibold bg-gray-900 text-white hover:bg-gray-800 transition shadow-sm"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* ===== TOP SPLIT ===== */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ===== CALENDAR ===== */}
         <div className="bg-white border rounded-2xl p-4 shadow-sm">
-          <Calendar
+          <CalendarPro
             month={calendarMonth}
             data={calendarMap}
             selectedDay={selectedDay}
@@ -136,15 +204,46 @@ export default function Performance() {
               )
             }
           />
+
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+            <span className="font-semibold text-gray-700">Legend:</span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-3 w-3 rounded bg-emerald-200 border" /> Profit
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-3 w-3 rounded bg-rose-200 border" /> Loss
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-3 w-3 rounded bg-gray-100 border" /> No trades
+            </span>
+          </div>
         </div>
 
         {/* ===== ANALYTICS + FILTER ===== */}
         <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-4 w-full">
-          <div>
-            <h2 className="text-base font-semibold">Trade Analytics</h2>
-            <p className="text-sm text-gray-500">
-              Closed positions performance
-            </p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-base font-semibold">Trade Analytics</h2>
+              <p className="text-sm text-gray-500">
+                Closed positions performance
+              </p>
+            </div>
+
+            {(selectedDay || symbol || result !== "ALL" || from || to) && (
+              <div className="flex items-center gap-2">
+                <div className="text-[11px] px-3 py-1 rounded-full border bg-gray-50">
+                  Trades: <span className="font-semibold">{totals.trades}</span>
+                </div>
+                <div
+                  className={`text-[11px] px-3 py-1 rounded-full border bg-gray-50 ${
+                    totals.net >= 0 ? "text-green-700" : "text-red-700"
+                  }`}
+                >
+                  Net:{" "}
+                  <span className="font-semibold">{fmtMoney(totals.net)}</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {summary && (
@@ -155,90 +254,67 @@ export default function Performance() {
                 value={fmtMoney(summary.totalPnL)}
                 color={summary.totalPnL >= 0 ? "green" : "red"}
               />
-              <KPI label="Win %" value={`${summary.winRate.toFixed(1)}%`} />
-              <KPI
-                label="Avg Win"
-                value={fmtMoney(summary.avgWin)}
-                color="green"
-              />
-              <KPI
-                label="Avg Loss"
-                value={fmtMoney(summary.avgLoss)}
-                color="red"
-              />
+              <KPI label="Win %" value={`${Number(summary.winRate || 0).toFixed(1)}%`} />
+              <KPI label="Avg Win" value={fmtMoney(summary.avgWin)} color="green" />
+              <KPI label="Avg Loss" value={fmtMoney(summary.avgLoss)} color="red" />
             </div>
           )}
 
           <div className="border-t" />
 
           {/* ===== FILTER LINE (FULL WIDTH) ===== */}
-            <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_1fr] gap-3 w-full">
+          <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_1fr] gap-3 w-full">
             <input
-                placeholder="Symbol"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                className="h-10 w-full border rounded-lg px-3 text-sm"
+              placeholder="Symbol"
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              className="h-10 w-full border rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/10"
             />
 
             <select
-                value={result}
-                onChange={(e) => setResult(e.target.value)}
-                className="h-10 w-full border rounded-lg px-3 text-sm"
+              value={result}
+              onChange={(e) => setResult(e.target.value)}
+              className="h-10 w-full border rounded-lg px-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gray-900/10"
             >
-                <option>ALL</option>
-                <option>WIN</option>
-                <option>LOSS</option>
-                <option>BREAKEVEN</option>
+              <option>ALL</option>
+              <option>WIN</option>
+              <option>LOSS</option>
+              <option>BREAKEVEN</option>
             </select>
 
             <input
-                type="date"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                className="h-10 w-full border rounded-lg px-3 text-sm"
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="h-10 w-full border rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/10"
             />
 
             <input
-                type="date"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                className="h-10 w-full border rounded-lg px-3 text-sm"
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="h-10 w-full border rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/10"
             />
-            </div>
+          </div>
 
           {/* ===== ACTIVE FILTERS ===== */}
           {(selectedDay || symbol || result !== "ALL" || from || to) && (
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
               {selectedDay && (
-                <FilterChip
-                  label={`Day: ${new Date(selectedDay).toLocaleDateString()}`}
-                  onClear={() => setSelectedDay(null)}
-                />
+                <FilterChip label={`Day: ${selectedDay}`} onClear={() => setSelectedDay(null)} />
               )}
               {symbol && (
-                <FilterChip
-                  label={`Symbol: ${symbol}`}
-                  onClear={() => setSymbol("")}
-                />
+                <FilterChip label={`Symbol: ${symbol}`} onClear={() => setSymbol("")} />
               )}
               {result !== "ALL" && (
-                <FilterChip
-                  label={`Result: ${result}`}
-                  onClear={() => setResult("ALL")}
-                />
+                <FilterChip label={`Result: ${result}`} onClear={() => setResult("ALL")} />
               )}
               {from && (
-                <FilterChip
-                  label={`From: ${new Date(from).toLocaleDateString()}`}
-                  onClear={() => setFrom("")}
-                />
+                <FilterChip label={`From: ${from}`} onClear={() => setFrom("")} />
               )}
               {to && (
-                <FilterChip
-                  label={`To: ${new Date(to).toLocaleDateString()}`}
-                  onClear={() => setTo("")}
-                />
+                <FilterChip label={`To: ${to}`} onClear={() => setTo("")} />
               )}
 
               <button
@@ -297,28 +373,49 @@ export default function Performance() {
               {!loading &&
                 filteredRows.map((r, i) => (
                   <tr
-                    key={i}
+                    key={`${r.dateKey}-${r.symbol}-${i}`}
                     className={`border-b transition ${
                       i % 2 === 0 ? "bg-white" : "bg-gray-50/40"
                     } hover:bg-blue-50/30`}
                   >
-                    <Td>{new Date(r.date).toLocaleDateString()}</Td>
+                    {/* ✅ show dateKey for perfect day alignment */}
+                    <Td className="tabular-nums">{r.dateKey}</Td>
                     <Td className="font-semibold">{r.symbol}</Td>
                     <Td>{r.strategy}</Td>
                     <Td className="text-center">
                       <ResultBadge result={r.result} />
                     </Td>
                     <Td
-                      className={`text-right font-bold ${
-                        r.revenue >= 0 ? "text-green-600" : "text-red-600"
+                      className={`text-right font-bold tabular-nums ${
+                        Number(r.revenue || 0) >= 0 ? "text-green-600" : "text-red-600"
                       }`}
                     >
-                      {r.revenue >= 0 ? "+" : "-"}
-                      {fmtMoney(Math.abs(r.revenue))}
+                      {Number(r.revenue || 0) >= 0 ? "+" : "-"}
+                      {fmtMoney(Math.abs(Number(r.revenue || 0)))}
                     </Td>
                   </tr>
                 ))}
             </tbody>
+
+            {!loading && filteredRows.length > 0 && (
+              <tfoot className="bg-gray-50 border-t">
+                <tr>
+                  <td className="px-4 py-3 text-xs text-gray-500" colSpan={3}>
+                    Showing <span className="font-semibold">{filteredRows.length}</span> trades
+                  </td>
+                  <td className="px-4 py-3 text-right text-xs text-gray-500">
+                    Net
+                  </td>
+                  <td
+                    className={`px-4 py-3 text-right font-bold tabular-nums ${
+                      totals.net >= 0 ? "text-green-700" : "text-red-700"
+                    }`}
+                  >
+                    {fmtMoney(totals.net)}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
@@ -349,14 +446,14 @@ const KPI = ({ label, value, color }) => (
 
 const FilterChip = ({ label, onClear }) => (
   <div className="flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded-full">
-    <span>{label}</span>
+    <span className="tabular-nums">{label}</span>
     <button onClick={onClear} className="font-bold hover:text-blue-900">
       ×
     </button>
   </div>
 );
 
-const Calendar = ({
+const CalendarPro = ({
   month,
   data,
   selectedDay,
@@ -366,42 +463,109 @@ const Calendar = ({
 }) => {
   const year = month.getFullYear();
   const m = month.getMonth();
-  const daysInMonth = new Date(year, m + 1, 0).getDate();
+
+  // 7x6 grid
+  const firstOfMonth = new Date(year, m, 1);
+  const startDow = firstOfMonth.getDay(); // 0 Sun
+  const start = new Date(year, m, 1 - startDow);
+
+  const days = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return d;
+  });
+
+  // scale for heat
+  const values = Object.values(data || {});
+  const maxAbs = values.length ? Math.max(...values.map((v) => Math.abs(v))) : 0;
+
+  const monthLabel = month.toLocaleString("default", { month: "long" });
+
+  const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   return (
     <>
       <div className="flex justify-between items-center mb-3">
-        <button onClick={onPrevMonth}>&lt;</button>
-        <h3 className="font-semibold">
-          {month.toLocaleString("default", { month: "long" })} {year}
-        </h3>
-        <button onClick={onNextMonth}>&gt;</button>
+        <button
+          onClick={onPrevMonth}
+          className="h-9 w-9 rounded-full border bg-white hover:bg-gray-50 transition"
+        >
+          &lt;
+        </button>
+
+        <div className="text-sm font-semibold">
+          {monthLabel} <span className="text-gray-500">{year}</span>
+        </div>
+
+        <button
+          onClick={onNextMonth}
+          className="h-9 w-9 rounded-full border bg-white hover:bg-gray-50 transition"
+        >
+          &gt;
+        </button>
       </div>
 
-      <div className="grid grid-cols-7 gap-1 text-xs">
-        {Array.from({ length: daysInMonth }, (_, i) => {
-          const day = i + 1;
-          const d = new Date(year, m, day).toISOString().slice(0, 10);
-          const val = data[d] || 0;
-          const active = selectedDay === d;
+      <div className="grid grid-cols-7 gap-1 text-[11px] text-gray-500 mb-2">
+        {dow.map((d) => (
+          <div key={d} className="text-center font-semibold">
+            {d}
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-7 gap-1">
+        {days.map((d) => {
+          const key = dateKeyLocal(d);
+          const val = Number(data?.[key] || 0);
+          const active = selectedDay === key;
+          const inMonth = d.getMonth() === m;
+
+          // intensity 0..1
+          const intensity = maxAbs ? Math.min(Math.abs(val) / maxAbs, 1) : 0;
+
+          // use subtle heat by opacity
+          const base =
+            val > 0
+              ? "bg-emerald-500"
+              : val < 0
+              ? "bg-rose-500"
+              : "bg-gray-100";
+
+          const text =
+            val > 0 || val < 0 ? "text-white" : "text-gray-500";
 
           return (
-            <div
-              key={d}
-              onClick={() => onSelectDay(d)}
-              className={`cursor-pointer rounded p-2 text-center ${
-                active
-                  ? "ring-2 ring-blue-500"
-                  : val > 0
-                  ? "bg-green-500 text-white"
-                  : val < 0
-                  ? "bg-red-500 text-white"
-                  : "bg-gray-100 text-gray-500"
-              }`}
+            <button
+              key={key}
+              onClick={() => onSelectDay(key)}
+              className={`
+                relative overflow-hidden
+                rounded-xl border
+                p-2 h-[58px]
+                text-left
+                transition
+                ${inMonth ? "opacity-100" : "opacity-40"}
+                ${active ? "ring-2 ring-blue-500 border-blue-500" : "hover:border-gray-300"}
+                ${base}
+                ${text}
+              `}
+              style={{
+                // opacity changes intensity but keep readable
+                opacity: inMonth ? (val === 0 ? 1 : 0.25 + intensity * 0.75) : 0.35,
+              }}
+              title={`${key} • ${fmtMoney(val)}`}
             >
-              <div>{day}</div>
-              {val !== 0 && <div>${val.toFixed(0)}</div>}
-            </div>
+              <div className="text-xs font-semibold tabular-nums">
+                {d.getDate()}
+              </div>
+
+              {val !== 0 && (
+                <div className="absolute bottom-2 left-2 text-[11px] font-bold tabular-nums">
+                  {val >= 0 ? "+" : "-"}
+                  {fmtCompact(Math.abs(val))}
+                </div>
+              )}
+            </button>
           );
         })}
       </div>
@@ -412,16 +576,16 @@ const Calendar = ({
 const Th = ({ children, className = "" }) => (
   <th
     className={`
-        px-4 py-3
-        text-left
-        text-xs
-        font-semibold
-        uppercase
-        tracking-wide
-        text-gray-600
-        ${className}
+      px-4 py-3
+      text-left
+      text-xs
+      font-semibold
+      uppercase
+      tracking-wide
+      text-gray-600
+      ${className}
     `}
-    >
+  >
     {children}
   </th>
 );
@@ -438,7 +602,11 @@ const ResultBadge = ({ result }) => {
   };
 
   return (
-    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${map[result]}`}>
+    <span
+      className={`px-3 py-1 rounded-full text-xs font-semibold ${
+        map[result] || "bg-gray-100 text-gray-700"
+      }`}
+    >
       {result}
     </span>
   );
