@@ -1,138 +1,120 @@
-// src/utils/socket.js
+// api/src/utils/socket.js
 import { Server } from "socket.io";
-import axios from "axios";
-import Position from "../models/Position.js";
-import UserWatchlist from "../models/UserWatchlist.js";
+import { marketEngine } from "../services/marketEngine.js";
 
 let ioInstance = null;
 
-/* ============================================================
-   INIT
-============================================================ */
+// Helpers
+const symRoom = (sym) => `sym:${String(sym).toUpperCase().trim()}`;
+
+// In-memory subscriptions
+const socketToSyms = new Map(); // socket.id -> Set(symbols)
+const allSubscribedSyms = new Set();
+
+function recalcUnion() {
+  allSubscribedSyms.clear();
+  for (const set of socketToSyms.values()) {
+    for (const s of set) allSubscribedSyms.add(s);
+  }
+}
+
+function addSubs(socket, symbols = []) {
+  const set = socketToSyms.get(socket.id) || new Set();
+  symbols.forEach((s) => {
+    const sym = String(s).toUpperCase().trim();
+    if (!sym) return;
+    set.add(sym);
+    socket.join(symRoom(sym));
+  });
+  socketToSyms.set(socket.id, set);
+  recalcUnion();
+}
+
+function removeSubs(socket, symbols = []) {
+  const set = socketToSyms.get(socket.id) || new Set();
+  symbols.forEach((s) => {
+    const sym = String(s).toUpperCase().trim();
+    if (!sym) return;
+    set.delete(sym);
+    socket.leave(symRoom(sym));
+  });
+  socketToSyms.set(socket.id, set);
+  recalcUnion();
+}
+
 export function initSocket(server) {
   ioInstance = new Server(server, {
     cors: {
       origin: "http://localhost:5173",
-      methods: ["GET", "POST", "PUT", "DELETE"],
-      credentials: true
+      methods: ["GET", "POST"],
+      credentials: true,
     },
     path: "/ws",
   });
 
   ioInstance.on("connection", (socket) => {
-    const userId = socket.handshake.auth?.userId;
-
-    console.log(`📡 Cliente conectado: ${socket.id}`);
-
-    if (userId) {
-      socket.join(userId);
-      console.log(`👤 Usuario unido a room: ${userId}`);
-    }
+    console.log(`📡 Socket connected: ${socket.id}`);
 
     socket.emit("welcome", {
-      message: "✅ Connected to MyInvesting live data stream.",
+      message: "✅ Connected to MyInvesting live market stream",
+    });
+
+    socket.on("subscribe", ({ symbols = [] } = {}) => {
+      addSubs(socket, symbols);
+      socket.emit("subscribed", {
+        symbols: Array.from(socketToSyms.get(socket.id) || []),
+      });
+    });
+
+    socket.on("unsubscribe", ({ symbols = [] } = {}) => {
+      removeSubs(socket, symbols);
+      socket.emit("subscribed", {
+        symbols: Array.from(socketToSyms.get(socket.id) || []),
+      });
     });
 
     socket.on("disconnect", () => {
-      console.log(`❌ Cliente desconectado: ${socket.id}`);
+      socketToSyms.delete(socket.id);
+      recalcUnion();
+      console.log(`❌ Socket disconnected: ${socket.id}`);
     });
   });
 
   /* ============================================================
-     🔵 1. STREAM POSICIONES ABIERTAS (tu sistema actual)
+     🔥 CENTRAL MARKET LOOP (socket-first)
+     - One loop
+     - marketEngine cache + TTL
+     - Emits ONLY to subscribed rooms
   ============================================================ */
-  const fetchYahooPrice = async (symbol) => {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`;
-      const res = await axios.get(url);
-      const result = res.data?.chart?.result?.[0];
-      const meta = result?.meta;
-
-      if (!meta) return null;
-
-      const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose;
-      const changePercent = prevClose
-        ? ((price - prevClose) / prevClose) * 100
-        : 0;
-
-      return {
-        symbol,
-        price,
-        prevClose,
-        changePercent,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (err) {
-      console.error(`Error fetching ${symbol} price:`, err.message);
-      return null;
-    }
-  };
+  const STREAM_MS = 2000;
 
   setInterval(async () => {
     try {
-      const openPositions = await Position.find({ status: "open" }).lean();
-      const uniqueSymbols = [...new Set(openPositions.map((p) => p.symbol))];
+      if (!allSubscribedSyms.size) return;
 
-      for (const sym of uniqueSymbols) {
-        const data = await fetchYahooPrice(sym);
-        if (data) {
-          ioInstance.emit("priceUpdate", data);
-        }
+      const symbols = Array.from(allSubscribedSyms);
+      const { quotes, marketSession } =
+        await marketEngine.getQuotes(symbols);
+
+      for (const [sym, q] of Object.entries(quotes || {})) {
+        ioInstance.to(symRoom(sym)).emit("priceUpdate", {
+          symbol: sym,
+          price: q.price,
+          changePercent: q.changePercent,
+          changeAmount: q.changeAmount,
+          volume: q.volume,
+          marketSession,
+        });
       }
     } catch (err) {
-      console.error("Error streaming positions:", err.message);
+      console.error("⛔ Socket market loop error:", err.message);
     }
-  }, 15000);
+  }, STREAM_MS);
 
-  /* ============================================================
-     🟢 2. STREAM WATCHLIST (nuevo — Tradier batch)
-  ============================================================ */
-  const streamWatchlist = async () => {
-    try {
-      const lists = await UserWatchlist.find();
-      const symbols = [...new Set(lists.flatMap((w) => w.symbols))];
-
-      if (!symbols.length) return;
-
-      const res = await axios.get(
-        `${process.env.TRADIER_API_URL}/markets/quotes`,
-        {
-          params: { symbols: symbols.join(",") },
-          headers: {
-            Authorization: `Bearer ${process.env.TRADIER_API_TOKEN}`,
-            Accept: "application/json",
-          },
-        }
-      );
-
-      let raw = res.data?.quotes?.quote || [];
-      if (!Array.isArray(raw)) raw = [raw];
-
-      raw.forEach((q) => {
-        if (!q?.symbol) return;
-
-        ioInstance.emit("priceUpdate", {
-          symbol: q.symbol,
-          price: Number(q.last) || null,
-          changePercent: Number(q.change_percentage) || 0,
-          changeAmount: Number(q.change) || 0,
-        });
-      });
-    } catch (err) {
-      console.error("⛔ Watchlist Stream Error:", err.message);
-    }
-  };
-
-  setInterval(streamWatchlist, 5000);
-
-  /* ============================================================
-     RETURN INSTANCE
-  ============================================================ */
   return ioInstance;
 }
 
 export function getIO() {
-  if (!ioInstance) throw new Error("Socket.IO no inicializado");
+  if (!ioInstance) throw new Error("Socket.IO not initialized");
   return ioInstance;
 }

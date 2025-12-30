@@ -1,8 +1,11 @@
-// src/hooks/useWatchlist.js
+// client/src/hooks/useWatchlist.js
 import { useState, useEffect, useRef, useCallback } from "react";
-import { io } from "socket.io-client";
 import api from "../services/api";
+import { socket } from "../lib/socket";
 
+/* =========================================================
+   LOGO PRELOAD CACHE
+========================================================= */
 const logoCache = new Set();
 const preloadLogo = (url) => {
   if (!url || logoCache.has(url)) return;
@@ -14,21 +17,6 @@ const preloadLogo = (url) => {
   img.onerror = markCached;
   img.src = url;
 };
-
-
-/* =========================================================
-   SOCKET SINGLETON
-========================================================= */
-let socket = null;
-function getSocket() {
-  if (!socket) {
-    socket = io(import.meta.env.VITE_API_WS_URL || "http://localhost:4000", {
-      path: "/ws",
-      reconnectionDelayMax: 4000,
-    });
-  }
-  return socket;
-}
 
 /* =========================================================
    PAGE VISIBILITY
@@ -46,7 +34,7 @@ const usePageVisible = () => {
 };
 
 /* =========================================================
-   SAFE API
+   SAFE API (retry 429)
 ========================================================= */
 const safeAPI = async (fn) => {
   let attempts = 0;
@@ -81,18 +69,16 @@ export default function useWatchlist() {
   const visible = usePageVisible();
   const poller = useRef(null);
 
-  const pollerKickoff = useRef(null);
-
   /* =========================================================
-     LOAD QUOTES + SPARK
+     LOAD QUOTES (FAST — NO META / NO SPARK)
   ========================================================= */
-  const loadQuotes = useCallback(
-    async (customSymbols, { skipLoadingGuard = false } = {}) => {
+  const loadQuotesFast = useCallback(
+    async (customSymbols) => {
       const tickers = customSymbols?.length ? customSymbols : symbols;
-      if (!tickers.length || (loading && !skipLoadingGuard)) return;
+      if (!tickers.length) return;
 
       const r = await safeAPI(() =>
-        api.post("/api/market/batch", { tickers })
+        api.post("/api/market/quotes-fast", { tickers })
       );
       if (!r) return;
 
@@ -106,29 +92,42 @@ export default function useWatchlist() {
         }
         return out;
       });
-
-      setSpark(r.data.spark || {});
     },
-    [symbols, loading]
+    [symbols]
   );
 
   /* =========================================================
-     LOAD WATCHLIST (🔥 LOGOS VIENEN AQUÍ)
-  ========================================================= */
+     LOAD WATCHLIST (META + INITIAL SPARK)
+========================================================= */
   const loadWatchlist = useCallback(async () => {
     const r = await safeAPI(() => api.get("/api/watchlist"));
     if (!r) return;
 
-    setSymbols(r.data.symbols || []);
+    const syms = r.data.symbols || [];
+
+    setSymbols(syms);
     setMeta(r.data.meta || {});
     setLoading(false);
-    await loadQuotes(r.data.symbols || [], { skipLoadingGuard: true });
-  }, [loadQuotes]);
+
+    // 1️⃣ Quotes rápidos
+    await loadQuotesFast(syms);
+
+    // 2️⃣ Spark SOLO una vez (batch pesado)
+    if (syms.length) {
+      const br = await safeAPI(() =>
+        api.post("/api/market/batch", { tickers: syms })
+      );
+      if (br?.data?.spark) setSpark(br.data.spark);
+    }
+  }, [loadQuotesFast]);
 
   useEffect(() => {
     loadWatchlist();
   }, [loadWatchlist]);
 
+  /* =========================================================
+     PRELOAD LOGOS
+  ========================================================= */
   useEffect(() => {
     const logosList = Object.values(meta || {})
       .map((m) => m?.logo)
@@ -137,15 +136,17 @@ export default function useWatchlist() {
     logosList.forEach(preloadLogo);
   }, [meta]);
 
-
   /* =========================================================
-     WEBSOCKET LIVE PRICES
+     WEBSOCKET LIVE PRICES (SUBSCRIPTIONS)
   ========================================================= */
   useEffect(() => {
-    const s = getSocket();
+    if (!symbols.length) return;
 
-    s.on("priceUpdate", (d) => {
-      if (!d.symbol) return;
+    // Subscribe a los símbolos actuales
+    socket.emit("subscribe", { symbols });
+
+    const onPrice = (d) => {
+      if (!d?.symbol) return;
       setQuotes((prev) => ({
         ...prev,
         [d.symbol]: {
@@ -153,15 +154,24 @@ export default function useWatchlist() {
           price: d.price,
           changePercent: d.changePercent,
           changeAmount: d.changeAmount,
+          volume: d.volume,
+          marketSession: d.marketSession,
         },
       }));
-    });
+    };
 
-    return () => s.off("priceUpdate");
-  }, []);
+    socket.on("priceUpdate", onPrice);
+
+    return () => {
+      socket.off("priceUpdate", onPrice);
+      socket.emit("unsubscribe", { symbols });
+    };
+  }, [symbols]);
 
   /* =========================================================
-     SMART POLLING
+     LIGHT POLLING (VISIBILITY AWARE)
+     - solo quotes-fast
+     - fallback si socket duerme
   ========================================================= */
   useEffect(() => {
     if (poller.current) {
@@ -169,42 +179,20 @@ export default function useWatchlist() {
       poller.current = null;
     }
 
-    if (pollerKickoff.current) {
-      clearTimeout(pollerKickoff.current);
-      pollerKickoff.current = null;
-    }
+    if (!visible || !symbols.length) return;
 
-    if (!visible || !symbols.length || loading) return;
-
-    let cancelled = false;
-
-    const startPolling = async () => {
-      await loadQuotes();
-      if (cancelled) return;
-
-      pollerKickoff.current = setTimeout(() => {
-        loadQuotes();
-        poller.current = setInterval(loadQuotes, 15000);
-      }, 7000);
-    };
-
-    startPolling();
+    poller.current = setInterval(loadQuotesFast, 20000); // fallback suave
 
     return () => {
-      cancelled = true;
-      if (pollerKickoff.current) {
-        clearTimeout(pollerKickoff.current);
-        pollerKickoff.current = null;
-      }
       if (poller.current) {
         clearInterval(poller.current);
         poller.current = null;
       }
     };
-  }, [visible, symbols, loading, loadQuotes]);
+  }, [visible, symbols, loadQuotesFast]);
 
   /* =========================================================
-     ADD SYMBOL (🔥 backend guarda logo)
+     ADD SYMBOL
   ========================================================= */
   const addSymbol = async (sym) => {
     sym = sym.toUpperCase().trim();
@@ -237,14 +225,14 @@ export default function useWatchlist() {
   };
 
   /* =========================================================
-     REORDER (frontend only, opcional persistir luego)
+     REORDER (frontend only)
   ========================================================= */
   const reorderSymbols = (list) => {
     setSymbols(list);
   };
 
   /* =========================================================
-     DERIVED LOGOS (💎 CLAVE)
+     DERIVED LOGOS
   ========================================================= */
   const logos = {};
   for (const s of symbols) {
@@ -254,13 +242,13 @@ export default function useWatchlist() {
   return {
     symbols,
     quotes,
-    logos, // 👈 ahora VIENE DE META
+    logos,
     meta,
     spark,
     loading,
     addSymbol,
     removeSymbol,
     reorderSymbols,
-    refreshAll: loadQuotes,
+    refreshAll: loadQuotesFast,
   };
 }

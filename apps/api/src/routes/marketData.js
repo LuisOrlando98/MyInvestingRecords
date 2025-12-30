@@ -1,131 +1,73 @@
 // routes/marketData.js
 import express from "express";
-import axios from "axios";
 import { auth as authMiddleware } from "../middleware/auth.js";
 import { evaluateAlerts } from "../services/alertEngine.js";
+import { marketEngine } from "../services/marketEngine.js";
 
 const router = express.Router();
 
 /* ===========================================================
-   INTERNAL DELAY TO PREVENT FINNHUB 429 DURING F5 SPAM
+   ⚡ FAST QUOTES — UI CRÍTICO
+   Usado por: Dashboard / Watchlist / Screener
 =========================================================== */
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/* ===========================================================
-   TRADIER QUOTES
-=========================================================== */
-async function getTradierQuotes(tickers = []) {
+router.post("/quotes-fast", authMiddleware, async (req, res) => {
   try {
-    const url = `${process.env.TRADIER_API_URL}/markets/quotes`;
+    let { tickers } = req.body;
+    if (!tickers) return res.status(400).json({ error: "Tickers required" });
 
-    const res = await axios.get(url, {
-      params: { symbols: tickers.join(",") },
-      headers: {
-        Authorization: `Bearer ${process.env.TRADIER_API_TOKEN}`,
-        Accept: "application/json",
-      },
-    });
+    tickers = tickers.map((t) => String(t).toUpperCase().trim());
 
-    let raw = res.data?.quotes?.quote || [];
-    if (!Array.isArray(raw)) raw = [raw];
+    const { quotes, marketSession } = await marketEngine.getQuotes(tickers);
 
-    const quotes = {};
-    for (const q of raw) {
-      if (!q?.symbol) continue;
-
-      quotes[q.symbol] = {
-        price: Number(q.last) || null,
-        changeAmount: Number(q.change) || 0,
-        changePercent: Number(q.change_percentage) || 0,
-        volume: q.volume || 0,
-      };
-    }
-
-    return quotes;
-  } catch {
-    return {};
+    res.json({ quotes, marketSession });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-}
+});
 
 /* ===========================================================
-   FINNHUB PROFILE
+   ✅ Alias compatible (frontend existente)
 =========================================================== */
-async function getFinnhubProfile(symbol) {
+router.post("/quotes-batch", authMiddleware, async (req, res) => {
   try {
-    const url = `https://finnhub.io/api/v1/stock/profile2`;
+    let { tickers } = req.body;
+    if (!tickers) return res.status(400).json({ error: "Tickers required" });
 
-    await wait(250); // throttle
-    const res = await axios.get(url, {
-      params: { symbol, token: process.env.FINNHUB_API_KEY },
-    });
+    tickers = tickers.map((t) => String(t).toUpperCase().trim());
 
-    return {
-      company: res.data.name || symbol,
-      exchange: res.data.exchange,
-      ipo: res.data.ipo,
-      industry: res.data.finnhubIndustry,
-      marketCap: res.data.marketCapitalization,
-    };
-  } catch {
-    return { company: symbol };
+    const { quotes, marketSession } = await marketEngine.getQuotes(tickers);
+
+    res.json({ quotes, marketSession });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-}
+});
 
 /* ===========================================================
-   SPARKLINE
-=========================================================== */
-async function getSpark(symbol) {
-  try {
-    await wait(200);
-    const now = Math.floor(Date.now() / 1000);
-    const from = now - 6 * 60 * 60;
-
-    const res = await axios.get(
-      `https://finnhub.io/api/v1/stock/candle`,
-      {
-        params: {
-          symbol,
-          resolution: 5,
-          from,
-          to: now,
-          token: process.env.FINNHUB_API_KEY,
-        },
-      }
-    );
-
-    if (!res.data || res.data.s !== "ok") return [];
-
-    return res.data.t.map((t, i) => ({ x: t, y: res.data.c[i] }));
-  } catch {
-    return [];
-  }
-}
-
-/* ===========================================================
-   MAIN BATCH ROUTE
+   🧱 BATCH COMPLETO — DETALLE (NO UI CRÍTICO)
+   Mantiene response: { quotes, meta, spark }
 =========================================================== */
 router.post("/batch", authMiddleware, async (req, res) => {
   try {
     let { tickers } = req.body;
     if (!tickers) return res.status(400).json({ error: "Tickers required" });
 
-    tickers = tickers.map((t) => t.toUpperCase().trim());
+    tickers = tickers.map((t) => String(t).toUpperCase().trim());
 
-    const quotes = await getTradierQuotes(tickers);
+    // 1️⃣ Quotes rápidos (cacheados)
+    const { quotes } = await marketEngine.getQuotes(tickers);
 
-    const meta = {};
-    for (const sym of tickers) {
-      meta[sym] = await getFinnhubProfile(sym);
-    }
+    // 2️⃣ Meta + spark en paralelo (cache + concurrency)
+    const [meta, spark] = await Promise.all([
+      marketEngine.getProfiles(tickers, { concurrency: 4 }),
+      marketEngine.getSparks(tickers, { concurrency: 3 }),
+    ]);
 
-    const spark = {};
-    for (const sym of tickers) {
-      spark[sym] = await getSpark(sym);
-    }
-
-    // 🔔 EVALUAR ALERTAS
+    // 3️⃣ Alerts en background (NO bloquean)
     const io = req.app.get("io");
-    await evaluateAlerts(quotes, io);
+    evaluateAlerts(quotes, io).catch((e) =>
+      console.error("AlertEngine error:", e.message)
+    );
 
     res.json({ quotes, meta, spark });
   } catch (err) {

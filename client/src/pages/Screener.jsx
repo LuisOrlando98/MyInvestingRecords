@@ -1,126 +1,111 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Pencil, X, GripVertical } from "lucide-react";
+import {
+  Plus,
+  Pencil,
+  X,
+  GripVertical,
+  ArrowDownAZ,
+  ArrowUpZA,
+} from "lucide-react";
 import { io } from "socket.io-client";
 import api from "../services/api";
 
 /* ============================================================
+   SOCKET SINGLETON (🔥 NO TOCAR — FUNCIONA)
+============================================================ */
+const SOCKET_URL =
+  import.meta.env.VITE_API_WS_URL || "http://localhost:4000";
+
+let screenerSocket = null;
+function getScreenerSocket() {
+  if (!screenerSocket) {
+    screenerSocket = io(SOCKET_URL, {
+      path: "/ws",
+      transports: ["websocket"],
+    });
+  }
+  return screenerSocket;
+}
+
+/* ============================================================
    UTILS
 ============================================================ */
-const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
-
 function heatColor(pct = 0) {
-  const abs = clamp(Math.abs(Number(pct) || 0), 0, 10);
-  const alpha = 0.08 + (abs / 10) * 0.55;
-  if (pct > 0) return `rgba(34,197,94,${alpha})`;
-  if (pct < 0) return `rgba(239,68,68,${alpha})`;
-  return "rgba(229,231,235,0.55)";
+  const v = Math.abs(Number(pct) || 0);
+
+  const intensity =
+    v < 0.2 ? 0.06 :
+    v < 0.5 ? 0.14 :
+    v < 1   ? 0.26 :
+    v < 2   ? 0.42 :
+    v < 3   ? 0.58 :
+    v < 5   ? 0.72 :
+              0.85;
+
+  if (pct > 0) return `rgba(34,197,94,${intensity})`;
+  if (pct < 0) return `rgba(239,68,68,${intensity})`;
+  return "rgba(243,244,246,0.95)";
 }
 
 const fmtPct = (v) =>
   Number.isFinite(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%` : "—";
+
 const fmtPrice = (v) =>
   Number.isFinite(v) ? `$${v.toFixed(2)}` : "—";
 
-function isExtSession(session) {
-  return session === "PRE" || session === "AFTER";
-}
-
 /* ============================================================
-   FAST MARKET HOOK (quotes-batch + socket)
+   FAST MARKET (REALTIME — NO ROMPER)
 ============================================================ */
 function useFastMarket(symbols, enabled) {
   const [market, setMarket] = useState({});
-  const [booting, setBooting] = useState(true);
-
-  const socketRef = useRef(null);
-  const fetchedOnceRef = useRef(false);
-
   const symbolsKey = useMemo(() => symbols.join("|"), [symbols]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !symbols.length) return;
 
-    let alive = true;
-    fetchedOnceRef.current = false;
-    setBooting(true);
+    const socket = getScreenerSocket();
 
-    // 1) connect socket (light)
-    socketRef.current = io(
-      import.meta.env.VITE_API_WS_URL || "http://localhost:4000",
-      { path: "/ws" }
-    );
+    socket.emit("subscribe", { symbols });
 
-    // If your backend emits priceUpdate, we patch quickly:
-    socketRef.current.on("priceUpdate", (p) => {
-      setMarket((prev) => {
-        // only update if it exists in current list
-        if (!symbols.includes(p.symbol)) return prev;
+    const onPrice = (p) => {
+      if (!p?.symbol || !symbols.includes(p.symbol)) return;
 
-        const existing = prev[p.symbol] || {};
-        return {
-          ...prev,
-          [p.symbol]: {
-            ...existing,
-            regular: { price: p.price, pct: p.changePercent },
-            // keep session if we have it (from batch)
-            session: existing.session || "REGULAR",
-          },
+      setMarket((prev) => ({
+        ...prev,
+        [p.symbol]: {
+          ...(prev[p.symbol] || {}),
+          regular: { price: p.price, pct: p.changePercent },
+        },
+      }));
+    };
+
+    socket.on("priceUpdate", onPrice);
+
+    (async () => {
+      const r = await api.post("/api/market/quotes-batch", {
+        tickers: symbols,
+      });
+
+      const next = {};
+      symbols.forEach((s) => {
+        const q = r.data.quotes?.[s];
+        if (!q) return;
+        next[s] = {
+          regular: { price: q.price, pct: q.changePercent },
         };
       });
-    });
 
-    // 2) initial fast fetch (quotes-batch)
-    const fetchFast = async () => {
-      try {
-        if (!symbols.length) {
-          if (alive) setBooting(false);
-          return;
-        }
-
-        const r = await api.post("/api/market/quotes-batch", {
-          tickers: symbols,
-        });
-
-        if (!alive) return;
-
-        const next = {};
-        symbols.forEach((s) => {
-          const q = r.data.quotes?.[s];
-          if (!q) return;
-
-          next[s] = {
-            regular: { price: q.price, pct: q.changePercent },
-            ext: { price: q.extendedPrice, pct: q.extendedChangePercent },
-            session: q.marketSession || r.data.marketSession || "REGULAR",
-          };
-        });
-
-        setMarket((prev) => ({ ...prev, ...next }));
-        fetchedOnceRef.current = true;
-
-        // booting termina cuando ya tenemos al menos 1 quote válido
-        const hasAny = Object.values(next).some(
-          (v) => Number.isFinite(v?.regular?.price)
-        );
-        if (hasAny || symbols.length === 0) setBooting(false);
-        else setBooting(false); // evita stuck si backend no devuelve nada
-      } catch (err) {
-        console.error("Fast quotes-batch error:", err.message);
-        if (alive) setBooting(false);
-      }
-    };
-
-    fetchFast();
+      setMarket(next);
+    })();
 
     return () => {
-      alive = false;
-      socketRef.current?.disconnect();
-      socketRef.current = null;
+      socket.off("priceUpdate", onPrice);
+      socket.emit("unsubscribe", { symbols });
     };
-  }, [enabled, symbolsKey]); // ✅ estable, no se queda colgado
+  }, [enabled, symbolsKey]);
 
-  return { market, booting, setMarket };
+  return market;
 }
 
 /* ============================================================
@@ -134,93 +119,95 @@ export default function Screener() {
     []
   );
 
-  const ORDER_KEY = useMemo(() => `mir_watchlist_order_${userId}`, [userId]);
+  const ORDER_KEY = `mir_watchlist_order_${userId}`;
 
   const [symbols, setSymbols] = useState([]);
   const [watchlistLoaded, setWatchlistLoaded] = useState(false);
 
-  const [mode, setMode] = useState("view"); // view | add | edit
+  const [mode, setMode] = useState("view");
   const [input, setInput] = useState("");
-  const [error, setError] = useState("");
+  const [alert, setAlert] = useState(null);
+  const [sortDir, setSortDir] = useState("ASC");
 
   const dragFrom = useRef(null);
+  const dragOver = useRef(null);
 
-  /* ---------- load watchlist + apply saved order ---------- */
+  /* ---------- LOAD WATCHLIST ---------- */
   useEffect(() => {
-    let alive = true;
-    setWatchlistLoaded(false);
-
     (async () => {
-      try {
-        const r = await api.get("/api/watchlist");
-        if (!alive) return;
+      const r = await api.get("/api/watchlist");
+      const server = (r.data.symbols || []).map((s) => s.toUpperCase());
 
-        const serverSymbols = (r.data.symbols || [])
-          .map((s) => String(s).toUpperCase());
+      const saved = JSON.parse(localStorage.getItem(ORDER_KEY) || "[]");
+      const ordered = [
+        ...saved.filter((s) => server.includes(s)),
+        ...server.filter((s) => !saved.includes(s)),
+      ];
 
-        // apply saved local order
-        const saved = JSON.parse(localStorage.getItem(ORDER_KEY) || "[]");
-        const savedFiltered = saved.filter((s) => serverSymbols.includes(s));
-        const remaining = serverSymbols.filter((s) => !savedFiltered.includes(s));
-        setSymbols([...savedFiltered, ...remaining]);
-      } finally {
-        if (alive) setWatchlistLoaded(true);
-      }
+      setSymbols(ordered);
+      setWatchlistLoaded(true);
     })();
+  }, []);
 
-    return () => {
-      alive = false;
-    };
-  }, [ORDER_KEY]);
-
-  // persist local order
   useEffect(() => {
-    if (!symbols.length) return;
     localStorage.setItem(ORDER_KEY, JSON.stringify(symbols));
-  }, [symbols, ORDER_KEY]);
+  }, [symbols]);
 
-  const { market, booting } = useFastMarket(symbols, watchlistLoaded);
+  const market = useFastMarket(symbols, watchlistLoaded);
 
-  /* ---------- add (validated + fast) ---------- */
+  /* ---------- ALERT ---------- */
+  const showAlert = (msg) => {
+    setAlert(msg);
+    setTimeout(() => setAlert(null), 3000);
+  };
+
+  /* ---------- ADD / REMOVE ---------- */
   const addSymbol = async () => {
     const sym = input.trim().toUpperCase();
     if (!sym) return;
 
     if (symbols.includes(sym)) {
-      setError(`"${sym}" already exists`);
+      showAlert(`"${sym}" already exists`);
       return;
     }
 
     try {
-      // ✅ validate via fast route
       const r = await api.post("/api/market/quotes-batch", { tickers: [sym] });
-      const q = r.data.quotes?.[sym];
-
-      if (!q || !Number.isFinite(q.price)) {
-        setError(`"${sym}" is not a valid market symbol`);
+      if (!r.data.quotes?.[sym]) {
+        showAlert(`"${sym}" is not a valid symbol`);
         return;
       }
 
       await api.post("/api/watchlist/add", { symbol: sym });
-
-      setSymbols((prev) => [sym, ...prev]);
+      setSymbols((p) => [sym, ...p]);
       setInput("");
       setMode("view");
-      setError("");
     } catch {
-      setError("Validation failed. Try again.");
+      showAlert("Validation failed");
     }
   };
 
   const removeSymbol = async (sym) => {
     await api.post("/api/watchlist/remove", { symbol: sym });
-    setSymbols((prev) => prev.filter((s) => s !== sym));
+    setSymbols((p) => p.filter((s) => s !== sym));
   };
 
-  /* ---------- drag ---------- */
+  const toggleSort = () => {
+    setSortDir((d) => {
+      const next = d === "ASC" ? "DESC" : "ASC";
+      setSymbols((p) =>
+        [...p].sort((a, b) =>
+          next === "ASC" ? a.localeCompare(b) : b.localeCompare(a)
+        )
+      );
+      return next;
+    });
+  };
+
   const onDrop = (to) => {
     const from = dragFrom.current;
     dragFrom.current = null;
+    dragOver.current = null;
     if (from == null || from === to) return;
 
     setSymbols((arr) => {
@@ -231,57 +218,60 @@ export default function Screener() {
     });
   };
 
+  /* ============================================================
+     RENDER
+  ============================================================ */
   return (
     <div className="relative h-full p-3">
 
-      {/* ================= ACTION BAR ================= */}
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2">
-        {/* Error anchored above icons */}
-        {error && (
-          <div className="max-w-[320px] px-4 py-2 text-sm rounded-xl bg-red-600 text-white shadow">
-            {error}
-          </div>
-        )}
+      {/* ALERT */}
+      {alert && (
+        <div className="fixed top-4 right-4 z-50 px-4 py-2 rounded-xl
+                        bg-gray-900 text-white shadow-lg text-sm">
+          {alert}
+        </div>
+      )}
 
-        {/* Icon bar (clean + consistent) */}
-        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-full shadow-lg px-1 py-1">
+      {/* ACTION BAR */}
+      <div className="fixed bottom-5 right-5 z-50">
+        <div className="flex items-center gap-1 px-2 py-2 rounded-2xl
+                        bg-white/90 backdrop-blur border shadow-xl">
+
           <button
-            onClick={() => {
-              setMode(mode === "add" ? "view" : "add");
-              setError("");
-            }}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition
-              ${mode === "add" ? "bg-blue-600 text-white" : "text-blue-600 hover:bg-blue-50"}`}
-            title="Add symbol"
+            onClick={() => setMode(mode === "add" ? "view" : "add")}
+            className={`w-10 h-10 rounded-xl flex items-center justify-center
+              ${mode === "add" ? "bg-blue-600 text-white" : "hover:bg-blue-50"}`}
           >
             <Plus size={18} />
           </button>
 
           <button
-            onClick={() => {
-              setMode(mode === "edit" ? "view" : "edit");
-              setError("");
-            }}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition border-l
-              ${mode === "edit" ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-100"}`}
-            title="Edit / reorder"
+            onClick={() => setMode(mode === "edit" ? "view" : "edit")}
+            className={`w-10 h-10 rounded-xl flex items-center justify-center
+              ${mode === "edit" ? "bg-gray-900 text-white" : "hover:bg-gray-100"}`}
           >
             <Pencil size={16} />
           </button>
 
+          <button
+            onClick={toggleSort}
+            className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-gray-100"
+          >
+            {sortDir === "ASC" ? <ArrowDownAZ size={16} /> : <ArrowUpZA size={16} />}
+          </button>
+
           {mode === "add" && (
-            <div className="flex items-center gap-2 pr-2">
+            <div className="flex items-center gap-2 pl-2 border-l">
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addSymbol()}
+                className="text-sm px-2 py-1 border rounded-md w-28"
                 placeholder="Ticker"
-                className="ml-2 text-sm px-2 py-1 border rounded-md w-28 focus:outline-none"
-                autoFocus
               />
               <button
                 onClick={addSymbol}
-                className="text-xs font-semibold px-3 py-1 rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                className="px-3 py-1 text-xs bg-blue-600 text-white rounded-full"
               >
                 Add
               </button>
@@ -290,87 +280,59 @@ export default function Screener() {
         </div>
       </div>
 
-      {/* ================= LOADING (only until first values) ================= */}
-      {!watchlistLoaded && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-40">
-          <div className="flex items-center gap-3 text-sm text-gray-600">
-            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            Loading watchlist…
-          </div>
-        </div>
-      )}
-
-      {watchlistLoaded && booting && symbols.length > 0 && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/50 z-30 pointer-events-none">
-          <div className="flex items-center gap-3 text-sm text-gray-600">
-            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            Loading screener…
-          </div>
-        </div>
-      )}
-
-      {/* ================= GRID (renders instantly) ================= */}
+      {/* GRID */}
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
         {symbols.map((sym, i) => {
           const d = market[sym];
-
-          // skeleton tile (instant UI)
-          if (!d) {
-            return (
-              <div
-                key={sym}
-                className="h-[72px] rounded-xl bg-gray-100 animate-pulse border border-gray-200"
-                title={sym}
-              />
-            );
-          }
-
-          const ext = isExtSession(d.session);
-          const pct = ext ? d.ext?.pct : d.regular?.pct;
-          const price = ext ? d.ext?.price : d.regular?.price;
+          const pct = d?.regular?.pct;
+          const price = d?.regular?.price;
 
           return (
             <div
               key={sym}
               draggable={mode === "edit"}
               onDragStart={() => (dragFrom.current = i)}
-              onDragOver={(e) => mode === "edit" && e.preventDefault()}
+              onDragOver={(e) => {
+                if (mode === "edit") {
+                  e.preventDefault();
+                  dragOver.current = i;
+                }
+              }}
               onDrop={() => mode === "edit" && onDrop(i)}
               onClick={() => mode !== "edit" && navigate(`/ticker/${sym}`)}
-              className={`relative h-[72px] rounded-xl border border-gray-200 text-center cursor-pointer select-none transition
-                ${mode === "edit" ? "ring-2 ring-gray-900/10 hover:ring-gray-900/25" : "hover:scale-[1.02]"}`}
+              className={`relative h-[72px] rounded-xl text-center cursor-pointer
+                ${dragOver.current === i ? "border-2 border-dashed border-blue-500" : "border"}`}
               style={{ backgroundColor: heatColor(pct) }}
-              title={mode === "edit" ? "Drag to reorder" : "Open details"}
             >
               {mode === "edit" && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeSymbol(sym);
-                  }}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-white border flex items-center justify-center"
-                  title="Remove"
-                >
-                  <X size={12} />
-                </button>
-              )}
+                <>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeSymbol(sym);
+                    }}
+                    className="
+                      absolute top-1 right-1
+                      w-6 h-6
+                      bg-white rounded-full
+                      flex items-center justify-center
+                      shadow
+                      hover:bg-red-50 hover:text-red-600
+                      transition
+                    "
+                  >
+                    <X size={13} strokeWidth={2.5} />
+                  </button>
 
-              {mode === "edit" && (
-                <div className="absolute bottom-1 right-2 opacity-60">
-                  <GripVertical size={12} />
-                </div>
+                  <div className="absolute bottom-1 right-2 opacity-60">
+                    <GripVertical size={12} />
+                  </div>
+                </>
               )}
 
               <div className="mt-2 text-[11px] font-semibold">{sym}</div>
               <div className="text-sm font-bold">{fmtPrice(price)}</div>
               <div className="text-[11px] font-semibold">{fmtPct(pct)}</div>
-
-              {/* show only if PRE/AFTER */}
-              {ext && (
-                <div className="absolute bottom-1 left-1 right-1 text-[10px] text-gray-700">
-                  {d.session === "AFTER" ? "After Hours" : "Pre Market"}
-                </div>
-              )}
             </div>
           );
         })}

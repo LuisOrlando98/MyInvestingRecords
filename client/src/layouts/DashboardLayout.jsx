@@ -1,159 +1,145 @@
 import React, { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
+import {
+  LayoutDashboard,
+  Radar,
+  Briefcase,
+  TrendingUp,
+  Search,
+  ChevronRight,
+  ChevronLeft,
+  LogOut,
+} from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 export default function DashboardLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
-  const [menuOpen, setMenuOpen] = useState(false);
+
+  const [collapsed, setCollapsed] = useState(false);
 
   const initials = (name) =>
     name
       ?.split(" ")
-      .map((n) => n[0]?.toUpperCase()) 
+      .map((n) => n[0]?.toUpperCase())
       .join("") || "U";
 
-  const isActive = (p) => location.pathname === p;
+  const isActive = (path) => {
+    if (path === "/") {
+      return location.pathname === "/";
+    }
+    return location.pathname.startsWith(path);
+  };
 
   const navLinks = [
-    { to: "/", label: "Dashboard" },
-    { to: "/screener", label: "Screener" },
-    { to: "/positions", label: "Positions" },
-    { to: "/performance", label: "Performance" },
-    { to: "/ticker/SPY", label: "Ticker Details" },
+    { to: "/", label: "Dashboard", icon: LayoutDashboard },
+    { to: "/screener", label: "Screener", icon: Radar },
+    { to: "/positions", label: "Positions", icon: Briefcase },
+    { to: "/performance", label: "Performance", icon: TrendingUp },
+    { to: "/ticker/SPY", label: "Ticker Details", icon: Search },
   ];
 
   return (
-    <div className="w-full h-screen overflow-hidden bg-[#f4f7fb]">
-
-      {/* ============================
-          APP GRID
-      ============================= */}
+    <div className="w-full h-screen overflow-hidden bg-[#f5f7fb]">
       <div className="flex h-full">
 
-        {/* ============================
-            LEFT SIDEBAR (fixed width)
-        ============================= */}
-        <aside className="w-72 shrink-0 bg-white border-r border-gray-200 flex flex-col">
-
+        {/* ================= SIDEBAR ================= */}
+        <aside
+          className={`
+            relative group transition-all duration-300
+            ${collapsed ? "w-[84px]" : "w-72"}
+            bg-white border-r border-gray-200 flex flex-col
+          `}
+        >
           {/* LOGO */}
-          <div className="p-6 border-b border-gray-200">
-            <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-600 to-indigo-500 bg-clip-text text-transparent">
-              MyInvesting
-            </h1>
-            <p className="text-xs text-gray-400 mt-1">Premium Dashboard</p>
+          <div className="h-16 flex items-center justify-center border-b">
+            <span className="text-xl font-extrabold bg-gradient-to-r from-blue-600 to-indigo-500 bg-clip-text text-transparent">
+              {collapsed ? "MI" : "MyInvesting"}
+            </span>
           </div>
 
-          {/* NAV (independent scroll) */}
-          <nav className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
-            {navLinks.map(({ to, label }) => (
+          {/* NAV */}
+          <nav className="flex-1 py-6 space-y-3">
+            {navLinks.map(({ to, label, icon: Icon }) => (
               <Link
                 key={to}
                 to={to}
                 className={`
-                  flex items-center px-4 py-3 rounded-lg text-sm font-medium transition
+                  mx-3 flex items-center gap-4 rounded-xl
+                  px-4 py-3 text-sm font-medium transition-all
                   ${
                     isActive(to)
                       ? "bg-blue-100 text-blue-700"
-                      : "text-gray-700 hover:bg-gray-100"
+                      : "text-slate-600 hover:bg-gray-100"
                   }
                 `}
               >
-                {label}
+                <Icon size={20} className="shrink-0 text-indigo-500" />
+                {!collapsed && <span>{label}</span>}
               </Link>
             ))}
           </nav>
 
-          {/* FOOTER */}
-          <div className="p-4 border-t border-gray-200 text-xs text-gray-400">
-            © 2025 MyInvesting
-          </div>
-        </aside>
-
-        {/* ============================
-            MAIN COLUMN
-        ============================= */}
-        <div className="flex-1 min-w-0 flex flex-col">
-
-          {/* ============================
-              TOP BAR (no horizontal shift)
-          ============================= */}
-          <header className="shrink-0 bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center">
-            <h2 className="text-xl font-semibold text-gray-900 truncate">
-              {isActive("/")
-                ? "Dashboard Overview"
-                : location.pathname.startsWith("/screener")
-                ? "Market Screener"
-                : location.pathname.startsWith("/positions")
-                ? "Your Positions"
-                : location.pathname.startsWith("/performance")
-                ? "Performance"
-                : location.pathname.startsWith("/ticker")
-                ? "Ticker Details"
-                : "MyInvesting"}
-            </h2>
-
-            {/* USER MENU */}
-            <div className="relative">
-              <button
-                onClick={() => setMenuOpen((v) => !v)}
-                className="flex items-center gap-3 bg-gray-100 px-3 py-2 rounded-full hover:bg-gray-200 transition border border-gray-300"
+          {/* USER */}
+          <div className="p-4 border-t space-y-3">
+            <div className="flex flex-col items-center gap-2">
+              <div
+                className="
+                  w-11 h-11 rounded-full flex items-center justify-center
+                  bg-gradient-to-br from-blue-500 to-indigo-600
+                  text-white font-bold shadow
+                "
               >
-                <div className="w-9 h-9 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-bold shadow">
-                  {initials(user?.name)}
-                </div>
+                {initials(user?.name)}
+              </div>
 
-                <span className="text-sm font-medium text-gray-800 hidden md:block max-w-[140px] truncate">
-                  {user?.name}
-                </span>
-              </button>
-
-              {menuOpen && (
-                <div className="absolute right-0 mt-3 w-72 bg-white border border-gray-200 shadow-xl rounded-xl overflow-hidden z-50">
-                  <div className="px-5 py-4 border-b">
-                    <p className="font-semibold text-gray-900 truncate">
-                      {user?.name}
-                    </p>
-                    <p className="text-xs text-gray-500 truncate">
-                      {user?.email}
-                    </p>
-                  </div>
-
-                  <div className="py-2">
-                    <Link
-                      to="/account"
-                      className="block px-5 py-3 hover:bg-gray-100 text-sm"
-                    >
-                      Account Information
-                    </Link>
-
-                    <Link
-                      to="/settings"
-                      className="block px-5 py-3 hover:bg-gray-100 text-sm"
-                    >
-                      Settings
-                    </Link>
-
-                    <button
-                      onClick={logout}
-                      className="block w-full text-left px-5 py-3 text-red-600 hover:bg-red-50 text-sm border-t"
-                    >
-                      Log Out
-                    </button>
-                  </div>
+              {!collapsed && (
+                <div className="text-center min-w-0">
+                  <p className="text-sm font-semibold truncate">
+                    {user?.name}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate">
+                    {user?.email}
+                  </p>
                 </div>
               )}
             </div>
-          </header>
 
-          {/* ============================
-              PAGE CONTENT (only vertical scroll)
-          ============================= */}
-          <main className="flex-1 overflow-y-auto overflow-x-hidden p-8">
-            <Outlet />
-          </main>
+            <button
+              onClick={logout}
+              className="
+                w-full flex items-center justify-center gap-2
+                px-4 py-2 rounded-xl text-sm font-medium
+                text-red-600 hover:bg-red-50 transition
+              "
+            >
+              <LogOut size={16} />
+              {!collapsed && <span>Sign out</span>}
+            </button>
+          </div>
 
-        </div>
+          {/* COLLAPSE TOGGLE */}
+          <button
+            onClick={() => setCollapsed((v) => !v)}
+            className="
+              absolute top-1/2 -right-3 -translate-y-1/2
+              w-7 h-7 rounded-full flex items-center justify-center
+              bg-white border shadow-md
+              opacity-0 group-hover:opacity-100 transition
+            "
+          >
+            {collapsed ? (
+              <ChevronRight size={16} />
+            ) : (
+              <ChevronLeft size={16} />
+            )}
+          </button>
+        </aside>
+
+        {/* ================= CONTENT ================= */}
+        <main className="flex-1 overflow-y-auto p-8">
+          <Outlet />
+        </main>
       </div>
     </div>
   );
