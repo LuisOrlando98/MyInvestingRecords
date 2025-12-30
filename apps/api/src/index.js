@@ -19,6 +19,7 @@ import http from "http";
 
 import { initSocket } from "./utils/socket.js";
 import { authLimiter } from "./middleware/rateLimit.js";
+import alertsRoutes from "./routes/alerts.js";
 
 import newsRoutes from "./routes/news.js";
 import authRoutes from "./routes/auth.js";
@@ -90,6 +91,7 @@ app.use("/api/market/logo", marketLogoRoutes);  // ✔ ESTA ES LA BUENA
 app.use("/api/market", marketDataRoutes);
 app.use("/api/positions", positionsRoutes);
 app.use("/api/performance", performanceRoutes);
+app.use("/api/alerts", alertsRoutes);
 
 /* ============================================================
    ERROR HANDLER

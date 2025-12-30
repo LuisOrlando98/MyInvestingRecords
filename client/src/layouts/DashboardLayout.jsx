@@ -10,14 +10,14 @@ export default function DashboardLayout() {
   const initials = (name) =>
     name
       ?.split(" ")
-      .map((n) => n[0]?.toUpperCase())
-      .slice(0, 2)
+      .map((n) => n[0]?.toUpperCase()) 
       .join("") || "U";
 
   const isActive = (p) => location.pathname === p;
 
   const navLinks = [
     { to: "/", label: "Dashboard" },
+    { to: "/screener", label: "Screener" },
     { to: "/positions", label: "Positions" },
     { to: "/performance", label: "Performance" },
     { to: "/ticker/SPY", label: "Ticker Details" },
@@ -82,6 +82,8 @@ export default function DashboardLayout() {
             <h2 className="text-xl font-semibold text-gray-900 truncate">
               {isActive("/")
                 ? "Dashboard Overview"
+                : location.pathname.startsWith("/screener")
+                ? "Market Screener"
                 : location.pathname.startsWith("/positions")
                 ? "Your Positions"
                 : location.pathname.startsWith("/performance")

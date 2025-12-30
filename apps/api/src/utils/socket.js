@@ -20,7 +20,14 @@ export function initSocket(server) {
   });
 
   ioInstance.on("connection", (socket) => {
+    const userId = socket.handshake.auth?.userId;
+
     console.log(`📡 Cliente conectado: ${socket.id}`);
+
+    if (userId) {
+      socket.join(userId);
+      console.log(`👤 Usuario unido a room: ${userId}`);
+    }
 
     socket.emit("welcome", {
       message: "✅ Connected to MyInvesting live data stream.",

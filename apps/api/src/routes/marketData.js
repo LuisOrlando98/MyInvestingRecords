@@ -2,6 +2,7 @@
 import express from "express";
 import axios from "axios";
 import { auth as authMiddleware } from "../middleware/auth.js";
+import { evaluateAlerts } from "../services/alertEngine.js";
 
 const router = express.Router();
 
@@ -121,6 +122,10 @@ router.post("/batch", authMiddleware, async (req, res) => {
     for (const sym of tickers) {
       spark[sym] = await getSpark(sym);
     }
+
+    // 🔔 EVALUAR ALERTAS
+    const io = req.app.get("io");
+    await evaluateAlerts(quotes, io);
 
     res.json({ quotes, meta, spark });
   } catch (err) {

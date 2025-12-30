@@ -8,6 +8,7 @@ import Positions from "../pages/Positions";
 import NewPosition from "../pages/NewPosition";
 import EditPosition from "../pages/EditPosition";
 import Performance from "../pages/Performance";
+import Screener from "../pages/Screener";
 
 // 🔥 Nuevas rutas de usuario
 import Login from "../pages/Login";
@@ -34,6 +35,7 @@ export default function AppRoutes() {
         <Route path="/positions/new" element={<NewPosition />} />
         <Route path="/positions/:id/edit" element={<EditPosition />} />
         <Route path="/performance" element={<Performance />} />
+        <Route path="/screener" element={<Screener />} />
 
       </Route>
     </Routes>

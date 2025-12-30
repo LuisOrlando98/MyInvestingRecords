@@ -1,5 +1,8 @@
 // src/routes/positions.js
 import express from "express";
+
+import { validateStrategy } from "../utils/strategyValidator.js";
+
 import Position from "../models/Position.js";
 import { getOccSymbolsFromLegs } from "../utils/positionUtils.js";
 import { getOptionQuote } from "../services/tradier.js";
@@ -426,6 +429,31 @@ router.get("/:id", async (req, res) => {
     res.json({ success: true, data: position });
   } catch {
     res.status(500).json({ success: false, error: "Error al buscar la posición" });
+  }
+});
+
+/* ============================================================
+   🧠 VALIDATE STRATEGY (NO SAVE)
+============================================================ */
+router.post("/validate", (req, res) => {
+  try {
+    const error = validateStrategy(req.body, {
+      allowCloseOrRoll: false,
+    });
+
+    if (error) {
+      return res.status(400).json({
+        valid: false,
+        error,
+      });
+    }
+
+    return res.json({ valid: true });
+  } catch (err) {
+    return res.status(500).json({
+      valid: false,
+      error: "Strategy validation failed",
+    });
   }
 });
 
