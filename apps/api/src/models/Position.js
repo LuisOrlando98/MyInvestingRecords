@@ -78,6 +78,7 @@ const positionSchema = new mongoose.Schema(
     breakEvenLow: { type: Number },
     breakEvenHigh: { type: Number },
     realizedPnL: { type: Number },
+    realizedReturnPct: { type: Number},
 
     // ===============================
     // 🔁 ROLL DATA (NUEVO)
@@ -101,6 +102,15 @@ const positionSchema = new mongoose.Schema(
     },
     cumulativeBreakEven: {
       type: Number,
+      default: null,
+    },
+    rollAdjustmentAmount: {
+      type: Number,
+      default: 0, // cash amount entered by user for the roll
+    },
+    rollAdjustmentType: {
+      type: String,
+      enum: ["credit", "debit"],
       default: null,
     },
 

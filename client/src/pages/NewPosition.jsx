@@ -32,26 +32,7 @@ import {
 } from "../services/tradierService";
 
 import { brokerIcons } from "../utils/brokerIcons";
-
-// ==============================================
-// STRATEGY KEYS — MUST MATCH BACKEND VALIDATOR
-// (Backend expects lowercase keys like: "put credit spread")
-// ==============================================
-const STRATEGIES = {
-  STOCK: "stock",
-  CSP: "cash secured put",
-  CC: "covered call",
-
-  PCS: "put credit spread",
-  CCS: "call credit spread",
-  PDS: "put debit spread",
-  CDS: "call debit spread",
-
-  IC: "iron condor",
-  STRADDLE: "straddle",
-  STRANGLE: "strangle",
-  BUTTERFLY: "butterfly",
-};
+import { STRATEGIES, STRATEGY_OPTIONS } from "../components/strategies";
 
 // ==============================================
 // MAIN COMPONENT
@@ -421,21 +402,35 @@ export default function NewPosition() {
   }, [strategy, strikeA, strikeB, strikeC, strikeD, symbol, expiration, quantity]);
 
   // ==============================================
-  // LOAD QUOTES (Tradier per leg)
+  // LOAD QUOTES (Tradier per FINAL legs)
   // ==============================================
   useEffect(() => {
-    if (!legs.length) {
+    const optionLegs = finalLegs.filter(
+      (l) =>
+        l.optionType &&
+        typeof l.occSymbol === "string" &&
+        l.occSymbol.length > 10
+    );
+
+    if (!optionLegs.length) {
       setQuotes({});
       return;
     }
 
-    fetchOptionQuotesByLegs(legs)
-      .then((q) => setQuotes(q || {}))
-      .catch((err) => {
-        console.error(err);
-        setQuotes({});
+    let cancelled = false;
+
+    fetchOptionQuotesByLegs(optionLegs)
+      .then((q) => {
+        if (!cancelled) setQuotes(q || {});
+      })
+      .catch(() => {
+        if (!cancelled) setQuotes({});
       });
-  }, [legs]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [finalLegs.map((l) => l.occSymbol).join(",")]);
 
   // ==============================================
   // BACKEND STRATEGY VALIDATION
@@ -533,7 +528,13 @@ export default function NewPosition() {
 
       const delta = Number(q.delta ?? 0);
       const theta = Number(q.theta ?? 0);
-      const iv = Number(q.impliedVol ?? 0); // already percent
+      const rawIV =
+        q.impliedVol ??
+        q.impliedVolatility ??
+        q.implied_volatility ??
+        0;
+
+      const iv = rawIV > 1 ? rawIV : rawIV * 100;
       const qtyL = Number(leg.quantity || 1);
 
       // Sell flips exposure
@@ -719,16 +720,6 @@ export default function NewPosition() {
     />
   );
 }
-
-// ==============================
-// NewPosition.jsx — PART 2 / 3
-// Risk curve + Save + Main layout (wiring)
-// ==============================
-
-/* eslint-disable no-unused-vars */
-
-// NOTE: This PART assumes it is appended directly after PART 1 inside the same file.
-// We replace the temporary `return null;` from PART 1 with the real code below.
 
 // ======================================================================================
 // RISK CURVE (WEBULL STYLE)
@@ -1114,12 +1105,6 @@ function NewPositionReturn({
   );
 }
 
-// ==============================
-// NewPosition.jsx — PART 3 / 3
-// UI Components: LeftPanel + LegBuilder + MetricsPanel + helpers
-// AND final glue code to make NewPosition compile end-to-end
-// ==============================
-
 // ======================================================================================
 // LEFT PANEL
 // ======================================================================================
@@ -1189,23 +1174,19 @@ function LeftPanel({
       >
         <option value="">Select strategy</option>
 
-        <option value={STRATEGIES.STOCK}>Stock</option>
-        <option value={STRATEGIES.CSP}>Cash Secured Put</option>
-        <option value={STRATEGIES.CC}>Covered Call</option>
+        {STRATEGY_OPTIONS.map((s, i) => {
+          if (s.group) {
+            return (
+              <optgroup key={`group-${i}`} label={s.group} />
+            );
+          }
 
-        <optgroup label="Spreads">
-          <option value={STRATEGIES.PCS}>Put Credit Spread</option>
-          <option value={STRATEGIES.CCS}>Call Credit Spread</option>
-          <option value={STRATEGIES.PDS}>Put Debit Spread</option>
-          <option value={STRATEGIES.CDS}>Call Debit Spread</option>
-        </optgroup>
-
-        <optgroup label="Neutral / Volatility">
-          <option value={STRATEGIES.IC}>Iron Condor</option>
-          <option value={STRATEGIES.STRADDLE}>Straddle</option>
-          <option value={STRATEGIES.STRANGLE}>Strangle</option>
-          <option value={STRATEGIES.BUTTERFLY}>Butterfly</option>
-        </optgroup>
+          return (
+            <option key={s.key} value={s.key}>
+              {s.label}
+            </option>
+          );
+        })}
       </select>
 
       <label className="block text-sm font-semibold mb-1">Expiration</label>
@@ -1373,11 +1354,15 @@ function LegBuilder({
 
   // re-init local legs whenever base legs change
   useEffect(() => {
-    const initialized = (legs || []).map((l) => ({
-      ...l,
-      premium: l.premium ?? "",
-    }));
-    setLocalLegs(initialized);
+    setLocalLegs((prev) => {
+      return (legs || []).map((l) => {
+        const existing = prev.find((p) => p.occSymbol === l.occSymbol);
+        return {
+          ...l,
+          premium: existing?.premium ?? "",
+        };
+      });
+    });
   }, [legs]);
 
   // push to parent
@@ -1613,15 +1598,59 @@ function LegBuilder({
                   <p className="text-[11px] text-gray-600">{leg.occSymbol}</p>
                 )}
 
+                {/* Market data */}
+                {leg.occSymbol && !q && (
+                  <p className="text-xs mt-1 text-orange-500">
+                    Waiting for Tradier quote…
+                  </p>
+                )}
+
                 {q && (
-                  <>
-                    <p className="text-xs mt-1 text-gray-700">
-                      Bid: {q.bid} • Ask: {q.ask} • Mid: {mid}
-                    </p>
-                    <p className="text-[11px] text-gray-600 mt-1">
-                      Δ {d} · Θ {t} · IV {iv}%
-                    </p>
-                  </>
+                  <div className="mt-2 space-y-1 text-[12px] text-gray-700">
+
+                    {/* Row 1 */}
+                    <div className="flex gap-4">
+                      <div className="flex gap-1">
+                        <span className="text-gray-500">Bid</span>
+                        <span className="font-semibold">{q.bid ?? "-"}</span>
+                      </div>
+
+                      <div className="flex gap-1">
+                        <span className="text-gray-500">Ask</span>
+                        <span className="font-semibold">{q.ask ?? "-"}</span>
+                      </div>
+
+                      <div className="flex gap-1">
+                        <span className="text-gray-500">Mid</span>
+                        <span className="font-semibold">{mid}</span>
+                      </div>
+                    </div>
+
+                    {/* Row 2 */}
+                    <div className="flex gap-4">
+                      <div className="flex gap-1">
+                        <span className="text-gray-500">Δ</span>
+                        <span className="font-semibold">{d}</span>
+                      </div>
+
+                      <div className="flex gap-1">
+                        <span className="text-gray-500">Θ</span>
+                        <span className="font-semibold">{t}</span>
+                      </div>
+
+                      <div className="flex gap-1">
+                        <span className="text-gray-500">IV</span>
+                        <span
+                          className={`font-semibold ${
+                            Number(iv) > 70 ? "text-orange-600" : ""
+                          }`}
+                        >
+                          {iv}%
+                        </span>
+                      </div>
+                    </div>
+
+                  </div>
                 )}
 
                 {/* Premium input only if option */}

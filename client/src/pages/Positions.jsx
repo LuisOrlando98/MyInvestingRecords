@@ -209,7 +209,7 @@ function Positions() {
               <th>Last Price</th>
               <th>Entry Price</th>
               <th>Total Cost</th>
-              <th>BreakEven</th>
+              <th>Premium</th>
               <th>Max Profit</th>
               <th>Max Loss</th>
               <th>Revenue</th>
@@ -476,10 +476,18 @@ function Positions() {
                     {/* Open P&L % */}
                     <td
                       className={`px-3 py-2 ${
-                        m.openPnLPct >= 0 ? "text-green-600" : "text-red-600"
+                        pos.status === "Closed"
+                          ? pos.realizedReturnPct >= 0
+                            ? "text-green-600"
+                            : "text-red-600"
+                          : m.openPnLPct >= 0
+                          ? "text-green-600"
+                          : "text-red-600"
                       }`}
                     >
-                      {pct(m.openPnLPct)}
+                      {pos.status === "Closed"
+                        ? pct(pos.realizedReturnPct)
+                        : pct(m.openPnLPct)}
                     </td>
 
                     {/* Day's P&L */}
@@ -504,13 +512,15 @@ function Positions() {
                             ${pos.cumulativeBreakEven.toFixed(2)}
                           </span>
                           <span className="text-[11px] text-gray-500">
-                            Roll-adjusted BE
+                            Total Premium (after roll)
                           </span>
                         </div>
-                      ) : m.breakEven ? (
-                        `$${m.breakEven.toFixed(2)}`
+                      ) : pos.netPremium != null ? (
+                        <span className="font-medium text-gray-800">
+                          ${pos.netPremium.toFixed(2)}
+                        </span>
                       ) : (
-                        "—"
+                        <span className="text-gray-400">—</span>
                       )}
                     </td>
                     <td className="px-3 py-2">

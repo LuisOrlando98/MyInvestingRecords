@@ -65,7 +65,6 @@ function useFastMarket(symbols, enabled) {
     if (!enabled || !symbols.length) return;
 
     const socket = getScreenerSocket();
-
     socket.emit("subscribe", { symbols });
 
     const onPrice = (p) => {
@@ -120,6 +119,7 @@ export default function Screener() {
   );
 
   const ORDER_KEY = `mir_watchlist_order_${userId}`;
+  const GRID_KEY  = `mir_screener_cols_${userId}`;
 
   const [symbols, setSymbols] = useState([]);
   const [watchlistLoaded, setWatchlistLoaded] = useState(false);
@@ -128,6 +128,10 @@ export default function Screener() {
   const [input, setInput] = useState("");
   const [alert, setAlert] = useState(null);
   const [sortDir, setSortDir] = useState("ASC");
+
+  const [cols, setCols] = useState(
+    () => Number(localStorage.getItem(GRID_KEY)) || 6
+  );
 
   const dragFrom = useRef(null);
   const dragOver = useRef(null);
@@ -152,6 +156,10 @@ export default function Screener() {
   useEffect(() => {
     localStorage.setItem(ORDER_KEY, JSON.stringify(symbols));
   }, [symbols]);
+
+  useEffect(() => {
+    localStorage.setItem(GRID_KEY, cols);
+  }, [cols]);
 
   const market = useFastMarket(symbols, watchlistLoaded);
 
@@ -232,6 +240,30 @@ export default function Screener() {
         </div>
       )}
 
+      {/* DENSITY SLIDER (EDIT MODE) */}
+      {mode === "edit" && (
+        <div className="mb-3 px-4 py-3 rounded-xl border bg-white/80 backdrop-blur shadow-sm">
+          <div className="flex items-center gap-4">
+            <span className="text-xs font-semibold text-gray-600">
+              Density
+            </span>
+
+            <input
+              type="range"
+              min={3}
+              max={24}
+              value={cols}
+              onChange={(e) => setCols(Number(e.target.value))}
+              className="flex-1 accent-gray-900 cursor-pointer"
+            />
+
+            <span className="text-xs font-semibold text-gray-800 w-20 text-right">
+              {cols} cols
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* ACTION BAR */}
       <div className="fixed bottom-5 right-5 z-50">
         <div className="flex items-center gap-1 px-2 py-2 rounded-2xl
@@ -281,7 +313,10 @@ export default function Screener() {
       </div>
 
       {/* GRID */}
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+      <div
+        className="grid gap-2"
+        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+      >
         {symbols.map((sym, i) => {
           const d = market[sym];
           const pct = d?.regular?.pct;
@@ -311,15 +346,9 @@ export default function Screener() {
                       e.stopPropagation();
                       removeSymbol(sym);
                     }}
-                    className="
-                      absolute top-1 right-1
-                      w-6 h-6
-                      bg-white rounded-full
-                      flex items-center justify-center
-                      shadow
-                      hover:bg-red-50 hover:text-red-600
-                      transition
-                    "
+                    className="absolute top-1 right-1 w-6 h-6 bg-white rounded-full
+                               flex items-center justify-center shadow
+                               hover:bg-red-50 hover:text-red-600 transition"
                   >
                     <X size={13} strokeWidth={2.5} />
                   </button>

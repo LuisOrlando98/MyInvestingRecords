@@ -1,14 +1,18 @@
 // routes/tradier.js
 import express from "express";
+import axios from "axios";
+
 import { getOptionQuote } from "../services/tradier.js";
 import { generateOccSymbol } from "../utils/occSymbol.js";
 
 const router = express.Router();
+const TOKEN = process.env.TRADIER_ACCESS_TOKEN;
 
-/**
- * GET /api/tradier/quote
- * - Puede recibir directamente un símbolo OCC
- */
+/* ============================================================
+   GET /api/tradier/quote
+   - Accepts OCC symbol directly
+   - Or builds OCC from details
+============================================================ */
 router.get("/quote", async (req, res) => {
   try {
     let { symbol, expiration, strike, type } = req.query;
@@ -16,112 +20,147 @@ router.get("/quote", async (req, res) => {
     if (expiration && strike && type) {
       const generated = generateOccSymbol(symbol, expiration, strike, type);
       if (!generated) {
-        return res.status(400).json({ success: false, error: "Parámetros inválidos para OCC" });
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid parameters for OCC symbol" });
       }
       symbol = generated;
     }
 
     if (!symbol) {
-      return res.status(400).json({ success: false, error: "Símbolo requerido" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Symbol is required" });
     }
 
     const data = await getOptionQuote(symbol);
     res.json({ success: true, data });
   } catch (err) {
-    console.error("❌ Error Tradier /quote:", err.message);
-    res.status(500).json({ success: false, error: "No se pudo obtener la cotización" });
+    console.error("❌ Tradier /quote error:", err.message);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to fetch option quote" });
   }
 });
 
-/**
- * GET /api/tradier/quotes
- */
+/* ============================================================
+   GET /api/tradier/quotes
+   - Batch quotes
+============================================================ */
 router.get("/quotes", async (req, res) => {
   try {
     const { symbols } = req.query;
     if (!symbols) {
-      return res.status(400).json({ success: false, error: "Símbolos requeridos" });
+      return res.status(400).json({ success: false, error: "Symbols are required" });
     }
 
     const list = symbols.split(",").map((s) => s.trim()).filter(Boolean);
     if (!list.length) {
-      return res.status(400).json({ success: false, error: "Lista vacía de símbolos" });
+      return res.status(400).json({ success: false, error: "Empty symbols list" });
     }
 
-    const results = await Promise.allSettled(list.map((sym) => getOptionQuote(sym)));
+    const results = await Promise.allSettled(
+      list.map((sym) => getOptionQuote(sym))
+    );
 
     const quotes = results
-      .filter((r) => r.status === "fulfilled" && r.value)
+      .filter((r) => r.status === "fulfilled" && r.value?.symbol)
       .map((r) => r.value);
 
-    res.json({ quotes, count: quotes.length });
+    // 🔥 CLAVE: devolver "quotes", no "data"
+    res.json({
+      success: true,
+      quotes,
+      count: quotes.length,
+    });
   } catch (err) {
-    console.error("❌ Error Tradier /quotes:", err.message);
-    res.status(500).json({ success: false, error: "No se pudieron obtener cotizaciones" });
+    console.error("❌ Tradier /quotes error:", err.message);
+    res.status(500).json({ success: false, error: "Failed to fetch quotes" });
   }
 });
 
-/**
- * GET /api/tradier/expirations
- */
+/* ============================================================
+   GET /api/tradier/expirations
+   ✅ Returns ALL expirations
+   ✅ Stocks, indices, mini indices (XSP)
+============================================================ */
 router.get("/expirations", async (req, res) => {
   try {
     const { symbol } = req.query;
     if (!symbol) {
-      return res.status(400).json({ success: false, error: "Símbolo requerido" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Symbol is required" });
     }
 
-    const axios = (await import("axios")).default;
-    const token = process.env.TRADIER_ACCESS_TOKEN;
-
-    const { data } = await axios.get("https://api.tradier.com/v1/markets/options/expirations", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      params: { symbol, includeAllRoots: true },
-    });
+    const { data } = await axios.get(
+      "https://api.tradier.com/v1/markets/options/expirations",
+      {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Accept: "application/json",
+        },
+        params: {
+          symbol,
+          includeAllRoots: true, // 🔥 REQUIRED
+          strikes: false,
+        },
+      }
+    );
 
     let expirations = data?.expirations?.date || [];
-    if (!Array.isArray(expirations)) expirations = [];
 
-    const allowAll = ["SPY", "QQQ", "IWM", "SPX", "NDX", "RUT", "DJX", "VIX"].includes(symbol.toUpperCase());
-    const filtered = allowAll
-      ? expirations
-      : expirations.filter((d) => new Date(d + "T00:00:00Z").getUTCDay() === 5);
+    // Tradier may return string or array
+    if (!Array.isArray(expirations)) {
+      expirations = [expirations];
+    }
 
-    res.json({ success: true, data: filtered });
+    // Sort chronologically
+    expirations.sort((a, b) => new Date(a) - new Date(b));
+
+    res.json({ success: true, data: expirations });
   } catch (err) {
-    console.error("❌ Error expirations:", err.response?.data || err.message);
-    res.status(500).json({ success: false, error: "No se pudieron obtener las expiraciones" });
+    console.error(
+      "❌ Tradier /expirations error:",
+      err.response?.data || err.message
+    );
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch expirations",
+    });
   }
 });
 
-/**
- * GET /api/tradier/chains
- */
+/* ============================================================
+   GET /api/tradier/chains
+============================================================ */
 router.get("/chains", async (req, res) => {
   try {
     const { symbol, expiration } = req.query;
     if (!symbol || !expiration) {
-      return res.status(400).json({ success: false, error: "Falta symbol o expiration" });
+      return res.status(400).json({
+        success: false,
+        error: "Symbol and expiration are required",
+      });
     }
 
-    const axios = (await import("axios")).default;
-    const token = process.env.TRADIER_ACCESS_TOKEN;
-
-    const { data } = await axios.get("https://api.tradier.com/v1/markets/options/chains", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      params: { symbol, expiration },
-    });
+    const { data } = await axios.get(
+      "https://api.tradier.com/v1/markets/options/chains",
+      {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Accept: "application/json",
+        },
+        params: { symbol, expiration },
+      }
+    );
 
     let options = data?.options?.option || [];
     if (!Array.isArray(options)) options = [];
 
-    const strikes = Array.from(new Set(options.map((o) => +o.strike)))
+    const strikes = Array.from(
+      new Set(options.map((o) => Number(o.strike)))
+    )
       .filter((x) => !isNaN(x))
       .sort((a, b) => a - b);
 
@@ -142,44 +181,67 @@ router.get("/chains", async (req, res) => {
       data: {
         strikes,
         step,
-        calls: calls.map((c) => ({ strike: +c.strike, symbol: c.symbol })),
-        puts: puts.map((p) => ({ strike: +p.strike, symbol: p.symbol })),
+        calls: calls.map((c) => ({
+          strike: Number(c.strike),
+          symbol: c.symbol,
+        })),
+        puts: puts.map((p) => ({
+          strike: Number(p.strike),
+          symbol: p.symbol,
+        })),
       },
     });
   } catch (err) {
-    console.error("❌ Error chains:", err.response?.data || err.message);
-    res.status(500).json({ success: false, error: "No se pudo obtener la cadena de opciones" });
+    console.error(
+      "❌ Tradier /chains error:",
+      err.response?.data || err.message
+    );
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch option chain",
+    });
   }
 });
 
-/**
- * GET /api/tradier/quote/underlying
- */
+/* ============================================================
+   GET /api/tradier/quote/underlying
+============================================================ */
 router.get("/quote/underlying", async (req, res) => {
   try {
     const { symbol } = req.query;
     if (!symbol) {
-      return res.status(400).json({ success: false, error: "Símbolo requerido" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Symbol is required" });
     }
 
-    const axios = (await import("axios")).default;
-    const token = process.env.TRADIER_ACCESS_TOKEN;
-
-    const { data } = await axios.get("https://api.tradier.com/v1/markets/quotes", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      params: { symbols: symbol },
-    });
+    const { data } = await axios.get(
+      "https://api.tradier.com/v1/markets/quotes",
+      {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Accept: "application/json",
+        },
+        params: { symbols: symbol },
+      }
+    );
 
     const quote = data?.quotes?.quote;
     const last = Array.isArray(quote) ? quote[0]?.last : quote?.last;
 
-    res.json({ success: true, data: { last: Number(last) || null } });
+    res.json({
+      success: true,
+      data: { last: Number(last) || null },
+    });
   } catch (err) {
-    console.error("❌ Error quote underlying:", err.response?.data || err.message);
-    res.status(500).json({ success: false, error: "No se pudo obtener precio del subyacente" });
+    console.error(
+      "❌ Tradier /quote/underlying error:",
+      err.response?.data || err.message
+    );
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch underlying price",
+    });
   }
 });
 

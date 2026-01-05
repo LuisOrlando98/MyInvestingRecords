@@ -12,6 +12,7 @@ import {
   fetchUnderlyingQuote,
   fetchOptionQuotesByLegs,
 } from "../services/tradierService";
+
 import {
   LineChart,
   Line,
@@ -27,6 +28,8 @@ import {
 } from "recharts";
 
 import { brokerIcons } from "../utils/brokerIcons";
+import { STRATEGIES, STRATEGY_OPTIONS } from "../components/strategies";
+
 
 // ==============================================
 // MAIN COMPONENT
@@ -100,10 +103,22 @@ export default function PositionEditor({ initialData, onSave, isRoll }) {
     if (legs.length >= 4) setStrikeD(legs[3].strike);
 
     // Preserve premiums
-    const enriched = legs.map((leg) => ({
-      ...leg,
-      premium: leg.premium ?? "",
-    }));
+    const enriched = legs.map((leg) => {
+      const occSymbol =
+        leg.occSymbol ||
+        buildOccSymbol(
+          initialData.symbol.toUpperCase(),
+          leg.expiration.slice(0, 10),
+          leg.strike,
+          leg.optionType
+        );
+
+      return {
+        ...leg,
+        occSymbol,
+        premium: leg.premium ?? "",
+      };
+    });
     // ======================
     // ROLL SNAPSHOT
     // ======================
@@ -376,14 +391,14 @@ export default function PositionEditor({ initialData, onSave, isRoll }) {
   // LOAD QUOTES
   // ==============================================
   useEffect(() => {
-    if (!legs.length) {
+    if (!localLegs.length) {
       setQuotes({});
       return;
     }
 
     const run = async () => {
       try {
-        const q = await fetchOptionQuotesByLegs(legs);
+        const q = await fetchOptionQuotesByLegs(localLegs);
         setQuotes(q || {});
       } catch (e) {
         console.error(e);
@@ -391,8 +406,7 @@ export default function PositionEditor({ initialData, onSave, isRoll }) {
     };
 
     run();
-  }, [legs]);
-
+  }, [localLegs]);
   // ==============================================
   // SYNC localLegs with legs base (SAFE VERSION)
   // ==============================================
@@ -779,14 +793,19 @@ function LeftPanel({
         onChange={(e) => setStrategy(e.target.value)}
       >
         <option value="">Select strategy</option>
-        <option>Stock</option>
-        <option>Cash Secured Put</option>
-        <option>Covered Call</option>
-        <option>Put Credit Spread</option>
-        <option>Call Credit Spread</option>
-        <option>Put Debit Spread</option>
-        <option>Call Debit Spread</option>
-        <option>Iron Condor</option>
+        {STRATEGY_OPTIONS.map((s, i) => {
+          if (s.group) {
+            return (
+              <optgroup key={`group-${i}`} label={s.group} />
+            );
+          }
+
+          return (
+            <option key={s.key} value={s.key}>
+              {s.label}
+            </option>
+          );
+        })}
       </select>
 
       <label className="block text-sm font-semibold mb-1">Expiration</label>
@@ -981,13 +1000,9 @@ function LegBuilder({
               q && q.bid != null && q.ask != null
                 ? ((q.bid + q.ask) / 2).toFixed(2)
                 : "-";
-            const d =
-              q?.delta !== undefined ? Number(q.delta).toFixed(5) : "-";
-            const t =
-              q?.theta !== undefined ? Number(q.theta).toFixed(5) : "-";
-            const iv =
-              q?.impliedVol !== undefined
-                ? Number(q.impliedVol).toFixed(1)
+            const d = q?.delta !== undefined ? Number(q.delta).toFixed(5) : "-";
+            const t = q?.theta !== undefined ? Number(q.theta).toFixed(5) : "-";
+            const iv = q?.impliedVol !== undefined ? Number(q.impliedVol).toFixed(1)
                 : "-";
 
             return (
@@ -1001,14 +1016,39 @@ function LegBuilder({
                 <p className="text-[11px] text-gray-600">{leg.occSymbol}</p>
 
                 {q && (
-                  <>
-                    <p className="text-xs mt-1 text-gray-700">
-                      Bid: {q.bid} • Ask: {q.ask} • Mid: {mid}
-                    </p>
-                    <p className="text-[11px] text-gray-600 mt-1">
-                      Δ {d} · Θ {t} · IV {iv}%
-                    </p>
-                  </>
+                  <div className="mt-2 text-[12px] text-gray-700">
+
+                    {/* Row 1 */}
+                    <div className="flex items-center gap-3">
+                      <span className="text-gray-500">Bid</span>
+                      <span className="font-semibold">{Number(q.bid).toFixed(2)}</span>
+
+                      <span className="text-gray-500">Ask</span>
+                      <span className="font-semibold">{Number(q.ask).toFixed(2)}</span>
+
+                      <span className="text-gray-500">Mid</span>
+                      <span className="font-semibold">{mid}</span>
+                    </div>
+
+                    {/* Row 2 */}
+                    <div className="flex items-center gap-3 mt-1">
+                      <span className="text-gray-500">Δ</span>
+                      <span className="font-semibold">{d}</span>
+
+                      <span className="text-gray-500">Θ</span>
+                      <span className="font-semibold">{t}</span>
+
+                      <span className="text-gray-500">IV</span>
+                      <span
+                        className={`font-semibold ${
+                          Number(iv) > 70 ? "text-orange-600" : ""
+                        }`}
+                      >
+                        {iv}%
+                      </span>
+                    </div>
+
+                  </div>
                 )}
 
                 <label className="block text-xs font-semibold mt-2">

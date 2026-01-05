@@ -17,7 +17,10 @@ export async function fetchOptionQuotesByLegs(legs = []) {
     if (!symbols) return {};
 
     const { data } = await axios.get(`${API_BASE}/api/tradier/quotes`, {
-      params: { symbols },
+      params: {
+        symbols,
+        greeks: true,
+      },
     });
 
     const quotes = {};
