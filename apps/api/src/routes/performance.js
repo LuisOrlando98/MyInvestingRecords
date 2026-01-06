@@ -13,7 +13,6 @@ router.get("/", async (req, res) => {
 
     const match = {
       status: "Closed",
-      archived: { $ne: true },
     };
 
     if (symbol) match.symbol = symbol.toUpperCase();

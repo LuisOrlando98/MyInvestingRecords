@@ -27,7 +27,13 @@ function emitChange(req, type, data = null) {
 ============================================================ */
 router.get("/", async (req, res) => {
   try {
-    const filter = { ...req.query, archived: { $ne: true } };
+    const { includeArchived, ...query } = req.query;
+
+    const filter = {
+      ...query,
+      ...(includeArchived === "true" ? {} : { archived: { $ne: true } }),
+    };
+
     const positions = await Position.find(filter).sort({ openDate: -1 });
     res.json({ success: true, data: positions });
   } catch (err) {
@@ -40,7 +46,7 @@ router.get("/", async (req, res) => {
 ============================================================ */
 router.get("/stats", async (req, res) => {
   try {
-    const filter = { ...req.query, archived: { $ne: true } };
+    const filter = { ...req.query };
     if (!filter.status) filter.status = "Closed";
 
     const positions = await Position.find(filter);
@@ -85,7 +91,7 @@ router.get("/stats", async (req, res) => {
 router.get("/summary-by-strategy", async (req, res) => {
   try {
     const summary = await Position.aggregate([
-      { $match: { status: "Closed", archived: { $ne: true } } },
+      { $match: { status: "Closed" } },
       {
         $group: {
           _id: "$strategy",
@@ -120,7 +126,7 @@ router.get("/summary-by-strategy", async (req, res) => {
 router.get("/summary-by-symbol", async (req, res) => {
   try {
     const summary = await Position.aggregate([
-      { $match: { status: "Closed", archived: { $ne: true } } },
+      { $match: { status: "Closed" } },
       {
         $group: {
           _id: "$symbol",
@@ -156,7 +162,6 @@ router.get("/summary-by-month", async (req, res) => {
       {
         $match: {
           status: "Closed",
-          archived: { $ne: true },
           closeDate: { $ne: null },
         },
       },
@@ -422,6 +427,25 @@ router.put("/:id/close", async (req, res) => {
     // credit example: totalCost = -293, finalMarketValue = -285 => pnl = +8
     const realizedPnL = Number((finalMarketValue - pos.totalCost).toFixed(2));
 
+    // ===============================
+    // ✅ REALIZED RETURN %
+    // (same logic as Open P&L %)
+    // ===============================
+    let realizedReturnPct = null;
+
+    // Prefer maxLoss (credit spreads, condors)
+    if (Number.isFinite(pos.maxLoss) && pos.maxLoss > 0) {
+      realizedReturnPct = Number(
+        ((realizedPnL / pos.maxLoss) * 100).toFixed(2)
+      );
+    }
+    // Fallback: absolute capital used (debit trades)
+    else if (Number.isFinite(pos.totalCost) && pos.totalCost !== 0) {
+      realizedReturnPct = Number(
+        ((realizedPnL / Math.abs(pos.totalCost)) * 100).toFixed(2)
+      );
+    }
+
     let closedStatus = "breakeven";
     if (realizedPnL > 0.01) closedStatus = "win";
     if (realizedPnL < -0.01) closedStatus = "loss";
@@ -430,6 +454,7 @@ router.put("/:id/close", async (req, res) => {
     pos.exitPrice = numericExit;
     pos.closeDate = new Date();
     pos.realizedPnL = realizedPnL;
+    pos.realizedReturnPct = realizedReturnPct;
     pos.closedStatus = closedStatus;
     pos.marketValue = finalMarketValue;
     pos.legs = updatedLegs;

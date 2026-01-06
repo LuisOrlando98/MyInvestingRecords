@@ -45,14 +45,24 @@ function Positions() {
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openMenuId, setOpenMenuId] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
+
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [showRollModal, setShowRollModal] = useState(false);
   const [rollingPosition, setRollingPosition] = useState(null);
 
+  // ===== FILTERS (like Performance) =====
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+
+
   // === 1️⃣ Cargar posiciones desde el backend ===
-  const fetchPositions = async () => {
+  const fetchPositions = async (includeArchived = false) => {
     try {
-      const res = await axios.get("/api/positions");
+      const res = await axios.get("/api/positions", {
+        params: { includeArchived },
+      });
+
       setPositions(Array.isArray(res.data.data) ? res.data.data : []);
     } catch (e) {
       console.error("Error loading positions", e);
@@ -77,6 +87,10 @@ function Positions() {
   }, []);
 
   useEffect(() => {
+    fetchPositions(showArchived);
+  }, [showArchived]);
+
+  useEffect(() => {
     const closeMenu = () => setOpenMenuId(null);
     window.addEventListener("click", closeMenu);
     return () => window.removeEventListener("click", closeMenu);
@@ -95,15 +109,13 @@ function Positions() {
   }, []);
 
   // === 4️⃣ Ordenar posiciones por expiración ===
-  const sortedPositions = useMemo(
-    () =>
-      [...livePositions].sort(
-        (a, b) =>
-          new Date(a.legs?.[0]?.expiration || 0) -
-          new Date(b.legs?.[0]?.expiration || 0)
-      ),
-    [livePositions, forceRefresh] // ✅ nuevo: para que se recalcule cada 5s
-  );
+  const sortedPositions = useMemo(() => {
+    return [...livePositions].sort(
+      (a, b) =>
+        new Date(a.legs?.[0]?.expiration || 0) -
+        new Date(b.legs?.[0]?.expiration || 0)
+    );
+  }, [livePositions, forceRefresh]);
 
   // ✅ OJO: ESTE useMemo DEBE IR ANTES DEL "return loading" (Rules of Hooks)
   // 💰 Total Open P&L en vivo
@@ -137,10 +149,45 @@ function Positions() {
     };
   }, [sortedPositions]);
 
+  const filteredPositions = useMemo(() => {
+    return sortedPositions.filter((p) => {
+      // 🔤 Symbol
+      if (
+        symbolFilter &&
+        !p.symbol?.toUpperCase().includes(symbolFilter.toUpperCase())
+      ) {
+        return false;
+      }
+
+      // 📌 Status (Open / Closed / Rolled ONLY)
+      if (statusFilter !== "ALL" && p.status !== statusFilter) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [sortedPositions, symbolFilter, statusFilter]);
+
   if (loading)
     return (
       <p className="text-center mt-8 text-gray-500">Loading positions...</p>
     );
+  
+  const handleDelete = async (id) => {
+    const confirmText =
+      "DELETE this position permanently?\n\nThis action CANNOT be undone.";
+
+    if (!window.confirm(confirmText)) return;
+
+    try {
+      await axios.delete(`/api/positions/${id}`);
+      fetchPositions(showArchived);
+      setOpenMenuId(null);
+    } catch (err) {
+      console.error("Error deleting position", err);
+      alert("Error deleting position");
+    }
+  };
 
   // === 5️⃣ Render ===
   return (
@@ -149,38 +196,94 @@ function Positions() {
           {/* LEFT — Title + Open Positions pill */}
           <div className="flex items-center gap-4">
             {/* Title */}
-            <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-              Positions
-            </h1>
+              <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+                Positions
+              </h1>
 
-            {/* Divider */}
-            <span className="h-6 w-px bg-gray-300"></span>
+              {/* Open Positions Pill */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 text-sm">
+                <span className="text-gray-600">
+                  Open Positions
+                </span>
 
-            {/* Open Positions Pill */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 text-sm">
-              <span className="text-gray-600">
-                Open Positions
-              </span>
+                <span className="font-semibold text-gray-900">
+                  {headerStats.openCount}
+                </span>
 
-              <span className="font-semibold text-gray-900">
-                {headerStats.openCount}
-              </span>
+                {/* PnL */}
+                <span
+                  className={`flex items-center gap-0.5 font-semibold ${
+                    headerStats.openPnL >= 0 ? "text-green-600" : "text-red-600"
+                  }`}
+                >
+                  <i
+                    className={`bi ${
+                      headerStats.openPnL >= 0
+                        ? "bi-arrow-up-short"
+                        : "bi-arrow-down-short"
+                    } text-lg leading-none`}
+                  ></i>
+                  {fmt(Math.abs(headerStats.openPnL))}
+                </span>
+              </div>
 
-              {/* PnL */}
-              <span
-                className={`flex items-center gap-0.5 font-semibold ${
-                  headerStats.openPnL >= 0 ? "text-green-600" : "text-red-600"
-                }`}
+              {/* Divider */}
+              <span className="h-6 w-px bg-gray-300"></span>
+
+              <div className="flex items-center gap-3 px-4 py-2 rounded-full bg-gray-100 border">
+                <input
+                  id="showArchived"
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                <label
+                  htmlFor="showArchived"
+                  className="text-sm text-gray-700 cursor-pointer"
+                >
+                  Include archived
+                </label>
+              </div>
+
+              {/* Divider */}
+              <span className="h-6 w-px bg-gray-300"></span>
+
+              {/* ===== FILTER BAR (COMPACT) ===== */}
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 border rounded-full">
+
+              {/* Symbol */}
+              <input
+                placeholder="Symbol"
+                value={symbolFilter}
+                onChange={(e) => setSymbolFilter(e.target.value.toUpperCase())}
+                className="h-8 w-24 border rounded-full px-3 text-xs
+                          focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+              />
+
+              {/* Status */}
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="h-8 border rounded-full px-3 text-xs bg-white"
               >
-                <i
-                  className={`bi ${
-                    headerStats.openPnL >= 0
-                      ? "bi-arrow-up-short"
-                      : "bi-arrow-down-short"
-                  } text-lg leading-none`}
-                ></i>
-                {fmt(Math.abs(headerStats.openPnL))}
-              </span>
+                <option value="ALL">All</option>
+                <option value="Open">Open</option>
+                <option value="Closed">Closed</option>
+                <option value="Rolled">Rolled</option>
+              </select>
+
+              {(symbolFilter || statusFilter !== "ALL") && (
+                <button
+                  onClick={() => {
+                    setSymbolFilter("");
+                    setStatusFilter("ALL");
+                  }}
+                  className="text-[11px] text-gray-400 hover:text-gray-700 ml-1"
+                >
+                  Clear
+                </button>
+              )}
             </div>
           </div>
 
@@ -217,23 +320,23 @@ function Positions() {
           </thead>
 
           <tbody className="divide-y">
-            {sortedPositions.map((pos) => {
+            {filteredPositions.map((pos) => {
               const m =
-              pos.status === "Open"
-                ? calculatePositionMetrics(pos)
-                : {
-                    marketValue: 0,
-                    openPnL: 0,
-                    openPnLPct: 0,
-                    daysPnL: 0,
-                    last: null,
-                    entry: null,
-                    totalCost: pos.totalCost ?? 0,
-                    breakEven: null,
-                    maxProfit: null,
-                    maxLoss: null,
-                    revenue: null,
-                  };
+                pos.status === "Open"
+                  ? calculatePositionMetrics(pos)
+                  : {
+                      marketValue: 0,
+                      openPnL: pos.realizedPnL ?? 0,
+                      openPnLPct: pos.realizedReturnPct ?? 0,
+                      daysPnL: 0,
+                      last: pos.exitPrice ?? null,
+                      entry: pos.entryPrice ?? null,
+                      totalCost: pos.totalCost ?? 0,
+                      breakEven: null,
+                      maxProfit: null,
+                      maxLoss: null,
+                      revenue: pos.realizedReturnPct ?? null,
+                    };
               const exp = earliestExp(pos.legs);
               const brokerName = (pos.broker || "").trim();
               const isRolledIn = pos.status === "Open" && pos.rolledFrom;
@@ -247,12 +350,12 @@ function Positions() {
                     }
                     className={`relative transition cursor-pointer ${
                       pos.status === "Closed"
-                        ? "bg-gray-100 opacity-70"
+                        ? "bg-gray-100 text-gray-500 border-l-4 border-gray-300"
                         : "hover:bg-gray-50"
                     }`}
                   >
                     {/* Action */}
-                    <td className="w-[42px]">
+                    <td className="w-[42px] relative opacity-100">
                       <div className="flex items-center justify-center h-full">
                         <button
                           onClick={(e) => {
@@ -364,12 +467,13 @@ function Positions() {
                             )}
                           </div>
                         </div>
-                        {openMenuId && (
+                        {openMenuId === pos._id && (
                           <div
-                            className="fixed z-50 w-36 bg-white border rounded-md shadow-lg text-sm"
+                            className="fixed z-50 w-44 bg-white border rounded-md shadow-lg text-sm"
                             style={{ top: menuPos.y, left: menuPos.x }}
                             onClick={(e) => e.stopPropagation()}
                           >
+                            {/* ✏️ EDIT */}
                             <button
                               onClick={() => {
                                 window.location.href = `/positions/${openMenuId}/edit`;
@@ -379,6 +483,7 @@ function Positions() {
                               ✏️ Edit
                             </button>
 
+                            {/* ❌ CLOSE */}
                             {pos.status === "Open" && (
                               <button
                                 onClick={async () => {
@@ -386,11 +491,16 @@ function Positions() {
                                   if (!value) return;
 
                                   const exitPrice = parseFloat(value);
-                                  if (isNaN(exitPrice)) return alert("Invalid number");
+                                  if (isNaN(exitPrice)) {
+                                    alert("Invalid number");
+                                    return;
+                                  }
 
                                   try {
-                                    await axios.put(`/api/positions/${openMenuId}/close`, { exitPrice });
-                                    fetchPositions();
+                                    await axios.put(`/api/positions/${openMenuId}/close`, {
+                                      exitPrice,
+                                    });
+                                    fetchPositions(showArchived);
                                     setOpenMenuId(null);
                                   } catch {
                                     alert("Error closing position");
@@ -401,6 +511,8 @@ function Positions() {
                                 ❌ Close
                               </button>
                             )}
+
+                            {/* 🔁 ROLL */}
                             {pos.status === "Open" && (
                               <button
                                 onClick={() => {
@@ -412,13 +524,15 @@ function Positions() {
                                 🔁 Roll
                               </button>
                             )}
+
+                            {/* 🗂️ ARCHIVE */}
                             <button
                               onClick={async () => {
-                                if (!confirm("Archive this position?")) return;
+                                if (!window.confirm("Archive this position?")) return;
 
                                 try {
                                   await axios.put(`/api/positions/${openMenuId}/archive`);
-                                  fetchPositions();
+                                  fetchPositions(showArchived);
                                   setOpenMenuId(null);
                                 } catch {
                                   alert("Error archiving position");
@@ -427,6 +541,23 @@ function Positions() {
                               className="w-full text-left px-3 py-2 hover:bg-gray-100 text-gray-600"
                             >
                               🗂️ Archive
+                            </button>
+
+                            {/* 🧨 DELETE — SIEMPRE DISPONIBLE */}
+                            <button
+                              onClick={() => {
+                                const confirmText =
+                                  pos.status === "Open"
+                                    ? "DELETE this OPEN position permanently?\n\nThis will remove ALL history and cashflows.\n\nThis action CANNOT be undone."
+                                    : "DELETE this position permanently?\n\nThis action CANNOT be undone.";
+
+                                if (!window.confirm(confirmText)) return;
+
+                                handleDelete(openMenuId);
+                              }}
+                              className="w-full text-left px-3 py-2 hover:bg-red-50 text-red-600 border-t"
+                            >
+                              🧨 Delete permanently
                             </button>
                           </div>
                         )}
