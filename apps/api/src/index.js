@@ -45,8 +45,24 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(
   cors({
-    origin: ["http://localhost:5173"],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+
+      if (
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("http://127.0.0.1") ||
+        origin.startsWith("http://192.168.") ||
+        origin.startsWith("http://10.") ||
+        origin.startsWith("http://172.")
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -111,9 +127,9 @@ mongoose
     const io = initSocket(server);
     app.set("io", io);
 
-    server.listen(PORT, () =>
-      console.log(`🚀 API ON: http://localhost:${PORT}`)
-    );
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 API ON (LAN READY) → port ${PORT}`);
+    });
   })
   .catch((err) => {
     console.error("Mongo error:", err.message);

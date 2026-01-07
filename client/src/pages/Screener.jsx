@@ -7,6 +7,7 @@ import {
   GripVertical,
   ArrowDownAZ,
   ArrowUpZA,
+  Search,
 } from "lucide-react";
 import { io } from "socket.io-client";
 import api from "../services/api";
@@ -112,6 +113,7 @@ function useFastMarket(symbols, enabled) {
 ============================================================ */
 export default function Screener() {
   const navigate = useNavigate();
+  const [searchValue, setSearchValue] = useState("");
 
   const userId = useMemo(
     () => JSON.parse(localStorage.getItem("mir_user"))?._id || "anon",
@@ -291,6 +293,48 @@ export default function Screener() {
           >
             {sortDir === "ASC" ? <ArrowDownAZ size={16} /> : <ArrowUpZA size={16} />}
           </button>
+          
+          <button
+            onClick={() => {
+              setMode((m) => (m === "search" ? "view" : "search"));
+              setSearchValue("");
+            }}
+            className={`w-10 h-10 rounded-xl flex items-center justify-center transition
+              ${mode === "search"
+                ? "bg-emerald-600 text-white"
+                : "hover:bg-gray-100"}`}
+            title="Quick search"
+          >
+            <Search size={16} />
+          </button>
+
+          {mode === "search" && (
+            <div className="flex items-center gap-2 pl-2 border-l">
+              <input
+                autoFocus
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value.toUpperCase())}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setMode("view");
+                    setSearchValue("");
+                  }
+                }}
+                placeholder="AAPL"
+                className="text-sm px-2 py-1 border rounded-md w-24
+                          focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <button
+                onClick={() => {
+                  setMode("view");
+                  setSearchValue("");
+                }}
+                className="text-xs px-2 py-1 rounded-full bg-gray-200 hover:bg-gray-300"
+              >
+                Clear
+              </button>
+            </div>
+          )}
 
           {mode === "add" && (
             <div className="flex items-center gap-2 pl-2 border-l">
@@ -318,6 +362,8 @@ export default function Screener() {
         style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
       >
         {symbols.map((sym, i) => {
+          const isSearching = mode === "search" && searchValue.length > 0;
+          const isMatch = isSearching && sym.includes(searchValue);
           const d = market[sym];
           const pct = d?.regular?.pct;
           const price = d?.regular?.price;
@@ -334,9 +380,24 @@ export default function Screener() {
                 }
               }}
               onDrop={() => mode === "edit" && onDrop(i)}
-              onClick={() => mode !== "edit" && navigate(`/ticker/${sym}`)}
+              onClick={() => {
+                if (mode !== "edit" && mode !== "search") {
+                  navigate(`/ticker/${sym}`);
+                }
+              }}
               className={`relative h-[72px] rounded-xl text-center cursor-pointer
-                ${dragOver.current === i ? "border-2 border-dashed border-blue-500" : "border"}`}
+                transition-all duration-200
+                ${
+                  isSearching
+                    ? isMatch
+                      ? "ring-2 ring-emerald-500 scale-[1.03] z-10"
+                      : "opacity-40 blur-[1px]"
+                    : ""
+                }
+                ${dragOver.current === i
+                  ? "border-2 border-dashed border-blue-500"
+                  : "border"}
+              `}
               style={{ backgroundColor: heatColor(pct) }}
             >
               {mode === "edit" && (

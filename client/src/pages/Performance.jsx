@@ -1,6 +1,17 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import axios from "axios";
 import { motion } from "framer-motion";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ReferenceDot,
+  ReferenceLine,
+} from "recharts";
 
 axios.defaults.baseURL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -99,11 +110,6 @@ export default function Performance() {
     }
   }, [debouncedSymbol, from, to, result]);
 
-  /* ================= INITIAL LOAD ================= */
-  useEffect(() => {
-    load();
-  }, []); // eslint-disable-line
-
   /* ================= DEBOUNCE SYMBOL ================= */
   useEffect(() => {
     const t = setTimeout(() => {
@@ -128,6 +134,23 @@ export default function Performance() {
     return map;
   }, [rows]);
 
+  /* ================= CHART DATA (PnL per day) ================= */
+  const chartData = useMemo(() => {
+    const map = {};
+
+    for (const r of rows) {
+      const k = r.dateKey;
+      map[k] = (map[k] || 0) + Number(r.revenue || 0);
+    }
+
+    return Object.entries(map)
+      .map(([date, pnl]) => ({
+        date,
+        pnl,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [rows]);
+
   /* ================= FILTER BY DAY ================= */
   const filteredRows = useMemo(() => {
     if (!selectedDay) return rows;
@@ -150,6 +173,12 @@ export default function Performance() {
     const winRate = trades ? (wins / trades) * 100 : 0;
     return { trades, net, wins, losses, winRate };
   }, [filteredRows]);
+
+  /* ================= SELECTED DAY POINT (HIGHLIGHT ONLY) ================= */
+  const selectedPoint = useMemo(() => {
+    if (!selectedDay) return null;
+    return chartData.find((d) => d.date === selectedDay) || null;
+  }, [chartData, selectedDay]);
 
   /* ================= RENDER ================= */
   return (
@@ -185,7 +214,8 @@ export default function Performance() {
       </div>
 
       {/* ===== TOP SPLIT ===== */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-[auto_auto] gap-6">
+
         {/* ===== CALENDAR ===== */}
         <div className="bg-white border rounded-2xl p-4 shadow-sm">
           <CalendarPro
@@ -218,9 +248,10 @@ export default function Performance() {
             </span>
           </div>
         </div>
-
+        
         {/* ===== ANALYTICS + FILTER ===== */}
         <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-4 w-full">
+  
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-base font-semibold">Trade Analytics</h2>
@@ -245,7 +276,7 @@ export default function Performance() {
               </div>
             )}
           </div>
-
+          
           {summary && (
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <KPI label="Trades" value={summary.totalTrades} />
@@ -331,6 +362,88 @@ export default function Performance() {
               </button>
             </div>
           )}
+          {/* ===== DAILY P&L CHART (INSIDE ANALYTICS) ===== */}
+            <div className="h-[260px]">
+              {chartData.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-sm text-gray-400">
+                  No data to display
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} margin={{ left: 8, right: 8, top: 10 }}>
+                    <defs>
+                      <linearGradient id="pnlPositive" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#22c55e" stopOpacity={0.55} />
+                        <stop offset="100%" stopColor="#22c55e" stopOpacity={0.05} />
+                      </linearGradient>
+
+                      <linearGradient id="pnlNegative" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#ef4444" stopOpacity={0.55} />
+                        <stop offset="100%" stopColor="#ef4444" stopOpacity={0.05} />
+                      </linearGradient>
+                    </defs>
+
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+
+                    <ReferenceLine
+                      y={0}
+                      stroke="#9ca3af"
+                      strokeDasharray="4 4"
+                    />
+
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(d) => d.slice(5)}
+                    />
+
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(v) => `$${v}`}
+                      domain={["auto", "auto"]}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+
+                    <Tooltip
+                      cursor={{ stroke: "#2563eb", strokeDasharray: "3 3" }}
+                      formatter={(v) => [fmtMoney(v), "P&L"]}
+                      labelFormatter={(l) => `Date: ${l}`}
+                      contentStyle={{
+                        borderRadius: 12,
+                        border: "1px solid #e5e7eb",
+                        backgroundColor: "#ffffff",
+                        fontSize: 12,
+                        boxShadow: "0 10px 25px rgba(0,0,0,0.08)",
+                      }}
+                    />
+
+                    <Area
+                      type="monotone"
+                      dataKey="pnl"
+                      stroke="#22c55e"
+                      strokeWidth={2}
+                      fill="url(#pnlPositive)"
+                      dot={false}
+                      isAnimationActive
+                    />
+
+                    {selectedPoint && (
+                      <ReferenceDot
+                        x={selectedPoint.date}
+                        y={selectedPoint.pnl}
+                        r={8}
+                        fill="#2563eb"
+                        stroke="#ffffff"
+                        strokeWidth={3}
+                        isFront
+                      />
+                    )}
+
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </div>
         </div>
       </div>
 
@@ -338,15 +451,15 @@ export default function Performance() {
       <div className="bg-white border rounded-2xl shadow-sm overflow-hidden">
         <div className="overflow-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-100/80 backdrop-blur border-b sticky top-0 z-10">
-              <tr>
-                <Th>Date</Th>
-                <Th>Symbol</Th>
-                <Th>Strategy</Th>
-                <Th className="text-center">Result</Th>
-                <Th className="text-right">Revenue</Th>
-              </tr>
-            </thead>
+            <thead className="bg-gray-50/90 backdrop-blur border-b sticky top-0 z-10">
+  <tr>
+    <Th>Date</Th>
+    <Th>Symbol</Th>
+    <Th>Strategy</Th>
+    <Th className="text-center">Result</Th>
+    <Th className="text-right">Revenue</Th>
+  </tr>
+</thead>
 
             <tbody>
               {loading && (
@@ -374,24 +487,33 @@ export default function Performance() {
                 filteredRows.map((r, i) => (
                   <tr
                     key={`${r.dateKey}-${r.symbol}-${i}`}
-                    className={`border-b transition ${
-                      i % 2 === 0 ? "bg-white" : "bg-gray-50/40"
-                    } hover:bg-blue-50/30`}
+                    className={`
+                      border-b last:border-0
+                      transition-colors
+                      hover:bg-blue-50/40
+                      ${i % 2 === 0 ? "bg-white" : "bg-gray-50/30"}
+                    `}
                   >
                     {/* ✅ show dateKey for perfect day alignment */}
-                    <Td className="tabular-nums">{r.dateKey}</Td>
-                    <Td className="font-semibold">{r.symbol}</Td>
-                    <Td>{r.strategy}</Td>
+                    <Td className="tabular-nums text-xs text-gray-600"> {r.dateKey} </Td>
+                    <Td className="font-semibold tracking-wide"> {r.symbol} </Td>
+                    <Td className="text-gray-600 text-xs"> {r.strategy} </Td>
                     <Td className="text-center">
                       <ResultBadge result={r.result} />
                     </Td>
-                    <Td
-                      className={`text-right font-bold tabular-nums ${
-                        Number(r.revenue || 0) >= 0 ? "text-green-600" : "text-red-600"
-                      }`}
-                    >
-                      {Number(r.revenue || 0) >= 0 ? "+" : "-"}
-                      {fmtMoney(Math.abs(Number(r.revenue || 0)))}
+                    <Td className="text-right">
+                      <span
+                        className={`
+                          inline-flex items-center px-3 py-1 rounded-full
+                          text-xs font-bold tabular-nums
+                          ${Number(r.revenue || 0) >= 0
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-rose-50 text-rose-700"}
+                        `}
+                      >
+                        {Number(r.revenue || 0) >= 0 ? "+" : "-"}
+                        {fmtMoney(Math.abs(Number(r.revenue || 0)))}
+                      </span>
                     </Td>
                   </tr>
                 ))}
@@ -400,18 +522,20 @@ export default function Performance() {
             {!loading && filteredRows.length > 0 && (
               <tfoot className="bg-gray-50 border-t">
                 <tr>
-                  <td className="px-4 py-3 text-xs text-gray-500" colSpan={3}>
+                  <td colSpan={3} className="px-4 py-3 text-xs text-gray-500">
                     Showing <span className="font-semibold">{filteredRows.length}</span> trades
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-gray-500">
                     Net
                   </td>
-                  <td
-                    className={`px-4 py-3 text-right font-bold tabular-nums ${
-                      totals.net >= 0 ? "text-green-700" : "text-red-700"
-                    }`}
-                  >
-                    {fmtMoney(totals.net)}
+                  <td className="px-4 py-3 text-right">
+                    <span
+                      className={`font-bold tabular-nums ${
+                        totals.net >= 0 ? "text-green-700" : "text-red-700"
+                      }`}
+                    >
+                      {fmtMoney(totals.net)}
+                    </span>
                   </td>
                 </tr>
               </tfoot>

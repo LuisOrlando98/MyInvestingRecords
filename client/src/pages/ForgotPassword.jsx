@@ -6,6 +6,7 @@ export default function ForgotPassword() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -13,10 +14,13 @@ export default function ForgotPassword() {
     setMessage("");
 
     try {
+      setLoading(true);
       await api.post("/api/auth/forgot-password", { email });
       setMessage("If the email exists, a reset code has been sent.");
-    } catch (err) {
+    } catch {
       setError("An error occurred");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -30,7 +34,9 @@ export default function ForgotPassword() {
       <div className="relative z-10 max-w-md w-full p-8 bg-slate-900/80 border border-slate-700/60 rounded-2xl shadow-xl shadow-emerald-900/25 backdrop-blur-xl">
 
         <h2 className="text-2xl font-semibold text-slate-50 mb-2">Forgot Password</h2>
-        <p className="text-sm text-slate-400 mb-6">Enter your email to reset your password</p>
+        <p className="text-sm text-slate-400 mb-6">
+          Enter your email to reset your password
+        </p>
 
         {message && (
           <div className="mb-4 text-xs rounded-lg border border-emerald-400/40 bg-emerald-500/10 text-emerald-200 px-3 py-2">
@@ -51,23 +57,25 @@ export default function ForgotPassword() {
               type="email"
               className="w-full px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm focus:ring-2 focus:ring-emerald-500"
               required
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setError("");
+                setMessage("");
+              }}
             />
           </div>
 
           <button
             type="submit"
-            className="w-full mt-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-semibold text-sm py-2.5 shadow-lg shadow-emerald-900/40 transition"
+            disabled={loading}
+            className="w-full mt-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-semibold text-sm py-2.5 shadow-lg shadow-emerald-900/40 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Send reset code
+            {loading ? "Sending..." : "Send reset code"}
           </button>
         </form>
 
         <div className="mt-6 text-xs text-slate-400 text-center">
-          <Link
-            to="/login"
-            className="text-emerald-300 hover:underline"
-          >
+          <Link to="/login" className="text-emerald-300 hover:underline">
             Back to login
           </Link>
         </div>

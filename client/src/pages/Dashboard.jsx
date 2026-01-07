@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import axios from "axios";
 import {
   LineChart,
   Line,
@@ -9,17 +8,18 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import api from "../services/api";
 import { io } from "socket.io-client";
 
 import StockDetail from "../components/StockDetail";
 import Watchlist from "../components/watchlist/Watchlist";
 
-axios.defaults.baseURL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-
 const socket = io(
-  import.meta.env.VITE_API_WS_URL || "http://localhost:4000",
-  { path: "/ws" }
+  `${window.location.protocol}//${window.location.hostname}:4000`,
+  {
+    path: "/ws",
+    transports: ["websocket"],
+  }
 );
 
 // =========================================
@@ -52,15 +52,15 @@ export default function Dashboard() {
   // 🔄 LOAD DATA
   // =========================================
   useEffect(() => {
-    axios.get("/api/positions/stats").then((res) => {
+    api.get("/api/positions/stats").then((res) => {
       setStats(res.data.stats || res.data.data || {});
     });
 
-    axios.get("/api/positions/summary-by-month").then((res) => {
+    api.get("/api/positions/summary-by-month").then((res) => {
       setMonthlySummary(res.data.data || res.data.monthlySummary || []);
     });
 
-    axios.get("/api/positions/open-summary").then((res) => {
+    api.get("/api/positions/open-summary").then((res) => {
       setOpenPositions(res.data.data || res.data.openPositions || []);
     });
 

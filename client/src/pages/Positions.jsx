@@ -1,8 +1,9 @@
 // src/pages/Positions.jsx
 import React, { useEffect, useState, useMemo } from "react";
-import axios from "axios";
 import { XCircle, MoreVertical } from "lucide-react";
+import api from "../services/api";
 import { io } from "socket.io-client";
+import { useNavigate } from "react-router-dom";
 
 import { buildOptionarUrlFromPosition } from "../utils/optionarLink";
 import { Eye } from "lucide-react"; // icono profesional
@@ -22,13 +23,6 @@ import { useLiveQuotes } from "../hooks/useLiveQuotes";
 // 🏦 Íconos por broker
 import { brokerIcons } from "../utils/brokerIcons";
 
-axios.defaults.baseURL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-
-const socket = io(import.meta.env.VITE_API_WS_URL || "http://localhost:4000", {
-  path: "/ws",
-});
-
 // ✅ helper: formatea fechas vengan como Date o string
 function fmtDateYYYYMMDD(d) {
   if (!d) return "—";
@@ -42,6 +36,7 @@ function fmtDateYYYYMMDD(d) {
 }
 
 function Positions() {
+  const navigate = useNavigate();
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -59,7 +54,7 @@ function Positions() {
   // === 1️⃣ Cargar posiciones desde el backend ===
   const fetchPositions = async (includeArchived = false) => {
     try {
-      const res = await axios.get("/api/positions", {
+      const res = await api.get("/api/positions", {
         params: { includeArchived },
       });
 
@@ -71,9 +66,17 @@ function Positions() {
     }
   };
 
-  // === 2️⃣ WebSocket local ===
+  // === 2️⃣ WebSocket local (SAFE) ===
   useEffect(() => {
     fetchPositions();
+
+    const socket = io(
+      `${window.location.protocol}//${window.location.hostname}:4000`,
+      {
+        path: "/ws",
+        transports: ["websocket"],
+      }
+    );
 
     socket.on("priceUpdate", (data) => {
       setPositions((prev) =>
@@ -83,7 +86,10 @@ function Positions() {
       );
     });
 
-    return () => socket.off("priceUpdate");
+    return () => {
+      socket.off("priceUpdate");
+      socket.disconnect(); // 🔥 CLAVE
+    };
   }, []);
 
   useEffect(() => {
@@ -180,7 +186,7 @@ function Positions() {
     if (!window.confirm(confirmText)) return;
 
     try {
-      await axios.delete(`/api/positions/${id}`);
+      await api.delete(`/api/positions/${id}`);
       fetchPositions(showArchived);
       setOpenMenuId(null);
     } catch (err) {
@@ -290,7 +296,7 @@ function Positions() {
           {/* RIGHT — Button */}
           <button
             className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
-            onClick={() => (window.location.href = "/positions/new")}
+            onClick={() => navigate("/positions/new")}
           >
             + New Position
           </button>
@@ -345,9 +351,7 @@ function Positions() {
                 <React.Fragment key={pos._id}>
                   {/* === MAIN ROW (Double-Click to Edit) === */}
                   <tr
-                    onDoubleClick={() =>
-                      (window.location.href = `/positions/${pos._id}/edit`)
-                    }
+                    onDoubleClick={() => navigate(`/positions/${pos._id}/edit`)}                   
                     className={`relative transition cursor-pointer ${
                       pos.status === "Closed"
                         ? "bg-gray-100 text-gray-500 border-l-4 border-gray-300"
@@ -476,7 +480,8 @@ function Positions() {
                             {/* ✏️ EDIT */}
                             <button
                               onClick={() => {
-                                window.location.href = `/positions/${openMenuId}/edit`;
+                                setOpenMenuId(null);
+                                navigate(`/positions/${openMenuId}/edit`);
                               }}
                               className="w-full text-left px-3 py-2 hover:bg-gray-100"
                             >
@@ -497,7 +502,7 @@ function Positions() {
                                   }
 
                                   try {
-                                    await axios.put(`/api/positions/${openMenuId}/close`, {
+                                    await api.put(`/api/positions/${openMenuId}/close`, {
                                       exitPrice,
                                     });
                                     fetchPositions(showArchived);
@@ -517,7 +522,7 @@ function Positions() {
                               <button
                                 onClick={() => {
                                   setOpenMenuId(null);
-                                  window.location.href = `/positions/${pos._id}/edit?roll=true`;
+                                  navigate(`/positions/${pos._id}/edit?roll=true`);
                                 }}
                                 className="w-full text-left px-3 py-2 hover:bg-gray-100 text-purple-600"
                               >
@@ -531,7 +536,7 @@ function Positions() {
                                 if (!window.confirm("Archive this position?")) return;
 
                                 try {
-                                  await axios.put(`/api/positions/${openMenuId}/archive`);
+                                  await api.put(`/api/positions/${openMenuId}/archive`);
                                   fetchPositions(showArchived);
                                   setOpenMenuId(null);
                                 } catch {

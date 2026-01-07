@@ -3,23 +3,28 @@ import User from "../models/User.js";
 
 export const auth = async (req, res, next) => {
   try {
-
-    console.log("LOGIN BODY:", req.body);
     const header = req.headers.authorization;
-    if (!header) return res.status(401).json({ msg: "No token" });
+
+    if (!header || !header.startsWith("Bearer ")) {
+      return res.status(401).json({ msg: "No token provided" });
+    }
 
     const token = header.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id);
-    if (!user) return res.status(401).json({ msg: "User not found" });
+    const user = await User.findById(decoded.id).select("-password");
+    if (!user) {
+      return res.status(401).json({ msg: "User not found" });
+    }
 
-    if (user.status === "suspended")
+    if (user.status === "suspended") {
       return res.status(403).json({ msg: "Account suspended" });
+    }
 
     req.user = user;
     next();
   } catch (err) {
-    res.status(401).json({ msg: "Invalid token" });
+    console.error("AUTH ERROR:", err.message);
+    return res.status(401).json({ msg: "Invalid or expired token" });
   }
 };

@@ -9,15 +9,24 @@ import { sendEmail } from "../utils/sendEmail.js";
 
 const router = express.Router();
 
-/* ============================
-      REGISTER
-============================ */
+/* ============================================================
+   REGISTER
+============================================================ */
 router.post("/register", authLimiter, async (req, res) => {
   try {
-    const { name, email, password, phone, address, acceptsMarketing } = req.body;
+    const {
+      name,
+      email,
+      password,
+      phone,
+      address,
+      acceptsMarketing,
+    } = req.body;
 
     const exists = await User.findOne({ email });
-    if (exists) return res.status(400).json({ msg: "Email already exists" });
+    if (exists) {
+      return res.status(400).json({ msg: "Email already exists" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -28,9 +37,9 @@ router.post("/register", authLimiter, async (req, res) => {
       phone,
       address,
       acceptsMarketing,
+      emailVerified: false,
     });
 
-    // Email verification token
     const verifyToken = jwt.sign(
       { id: user._id },
       process.env.EMAIL_SECRET,
@@ -45,28 +54,32 @@ router.post("/register", authLimiter, async (req, res) => {
        </a>`
     );
 
-    res.json({ success: true, user });
+    res.json({
+      success: true,
+      msg: "Registration successful. Verify your email.",
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("REGISTER ERROR:", err);
+    res.status(500).json({ msg: "Registration failed" });
   }
 });
 
-/* ============================
-      LOGIN
-============================ */
+/* ============================================================
+   LOGIN
+============================================================ */
 router.post("/login", authLimiter, async (req, res) => {
   try {
     const { email, password, ip } = req.body;
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ msg: "User not found" });
-
-    console.log("👉 Email recibido:", email);
-    console.log("👉 Password recibido:", password);
-    console.log("👉 Hash en Mongo:", user?.password);
+    if (!user) {
+      return res.status(400).json({ msg: "User not found" });
+    }
 
     const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(400).json({ msg: "Incorrect password" });
+    if (!valid) {
+      return res.status(400).json({ msg: "Incorrect password" });
+    }
 
     const accessToken = jwt.sign(
       { id: user._id },
@@ -82,25 +95,40 @@ router.post("/login", authLimiter, async (req, res) => {
 
     user.refreshToken = refreshToken;
     user.lastLogin = new Date();
-    user.lastIP = ip || null;
+    user.lastIP = ip || req.ip;
     await user.save();
 
-    res.json({ accessToken, refreshToken, user });
-    } catch (err) {
-        console.error("🔥 ERROR EN LOGIN:", err);
-        res.status(500).json({ error: err.message });
-    }
+    res.json({
+      success: true,
+      accessToken,
+      refreshToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+      },
+    });
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    res.status(500).json({ msg: "Login failed" });
+  }
 });
 
-/* ============================
-      REFRESH TOKEN
-============================ */
+/* ============================================================
+   REFRESH TOKEN
+============================================================ */
 router.post("/refresh", async (req, res) => {
   try {
     const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(401).json({ msg: "No refresh token" });
+    }
 
     const user = await User.findOne({ refreshToken });
-    if (!user) return res.status(403).json({ msg: "Invalid refresh token" });
+    if (!user) {
+      return res.status(403).json({ msg: "Invalid refresh token" });
+    }
 
     jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
 
@@ -111,74 +139,99 @@ router.post("/refresh", async (req, res) => {
     );
 
     res.json({ accessToken: newAccessToken });
-  } catch {
+  } catch (err) {
+    console.error("REFRESH ERROR:", err);
     res.status(403).json({ msg: "Invalid refresh token" });
   }
 });
 
-/* ============================
-      LOGOUT
-============================ */
+/* ============================================================
+   LOGOUT
+============================================================ */
 router.post("/logout", auth, async (req, res) => {
-  req.user.refreshToken = null;
-  await req.user.save();
-  res.json({ success: true });
-});
-
-/* ============================
-      VERIFY EMAIL
-============================ */
-router.get("/verify-email", async (req, res) => {
   try {
-    const { token } = req.query;
-    const decoded = jwt.verify(token, process.env.EMAIL_SECRET);
-
-    await User.findByIdAndUpdate(decoded.id, { emailVerified: true });
-
+    req.user.refreshToken = null;
+    await req.user.save();
     res.json({ success: true });
-  } catch {
-    res.status(400).json({ msg: "Invalid token" });
+  } catch (err) {
+    res.status(500).json({ msg: "Logout failed" });
   }
 });
 
-/* ============================
-      RESET PASSWORD
-============================ */
-router.post("/forgot-password", async (req, res) => {
-  const { email } = req.body;
+/* ============================================================
+   VERIFY EMAIL
+============================================================ */
+router.get("/verify-email", async (req, res) => {
+  try {
+    const { token } = req.query;
 
-  const user = await User.findOne({ email });
-  if (!user) return res.json({ success: true }); // Don't reveal emails
+    const decoded = jwt.verify(token, process.env.EMAIL_SECRET);
 
-  user.resetToken = crypto.randomUUID();
-  user.resetTokenExp = Date.now() + 15 * 60 * 1000;
-  await user.save();
+    await User.findByIdAndUpdate(decoded.id, {
+      emailVerified: true,
+    });
 
-  await sendEmail(
-    email,
-    "Reset your password",
-    `Código: ${user.resetToken}`
-  );
-
-  res.json({ success: true });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ msg: "Invalid or expired token" });
+  }
 });
 
+/* ============================================================
+   FORGOT PASSWORD
+============================================================ */
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.json({ success: true });
+    }
+
+    user.resetToken = crypto.randomUUID();
+    user.resetTokenExp = Date.now() + 15 * 60 * 1000;
+    await user.save();
+
+    await sendEmail(
+      email,
+      "Reset your password",
+      `Your reset code: ${user.resetToken}`
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("FORGOT PASSWORD ERROR:", err);
+    res.status(500).json({ msg: "Failed to send reset token" });
+  }
+});
+
+/* ============================================================
+   RESET PASSWORD
+============================================================ */
 router.post("/reset-password", async (req, res) => {
-  const { token, newPassword } = req.body;
+  try {
+    const { token, newPassword } = req.body;
 
-  const user = await User.findOne({
-    resetToken: token,
-    resetTokenExp: { $gt: Date.now() },
-  });
+    const user = await User.findOne({
+      resetToken: token,
+      resetTokenExp: { $gt: Date.now() },
+    });
 
-  if (!user) return res.status(400).json({ msg: "Invalid or expired token" });
+    if (!user) {
+      return res.status(400).json({ msg: "Invalid or expired token" });
+    }
 
-  user.password = await bcrypt.hash(newPassword, 10);
-  user.resetToken = null;
-  user.resetTokenExp = null;
-  await user.save();
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.resetToken = null;
+    user.resetTokenExp = null;
+    await user.save();
 
-  res.json({ success: true });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    res.status(500).json({ msg: "Password reset failed" });
+  }
 });
 
 export default router;

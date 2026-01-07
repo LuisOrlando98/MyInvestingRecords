@@ -1,12 +1,10 @@
 // src/pages/TickerDetails.js
 import React, { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import axios from "axios";
-import { io } from "socket.io-client"; // (lo dejas si lo usas luego; ahora mismo no se usa)
+import api from "../services/api";
 import { motion } from "framer-motion";
 import FinvizTable from "../components/FinvizTable";
 import TradingViewSymbolInfo from "../components/TradingViewWidgets/TradingViewSymbolInfo";
-import TradingViewChart from "../components/TradingViewWidgets/TradingViewChart"; // (lo dejas si lo usas luego; ahora mismo no se usa)
 import NewsFeed from "../components/NewsFeed";
 
 /* ============================================================
@@ -70,7 +68,7 @@ function TickerDetails() {
     if (!symbol) return;
     setLoading(true);
 
-    axios
+    api
       .get(`/api/finviz/${symbol}`)
       .then((res) => {
         const data = res.data?.data || [];
@@ -89,10 +87,11 @@ function TickerDetails() {
   useEffect(() => {
     const fetchQuote = async () => {
       try {
-        const res = await axios.get(
+        const res = await fetch(
           `https://api.twelvedata.com/quote?symbol=${symbol}&apikey=demo`
         );
-        setQuote(res.data);
+        const data = await res.json();
+        setQuote(data);
       } catch (err) {
         console.warn("Quote fetch failed:", err.message);
       }
@@ -106,7 +105,7 @@ function TickerDetails() {
   useEffect(() => {
     if (!symbol) return;
 
-    axios
+    api
       .get(`/api/positions?symbol=${symbol}`)
       .then((res) => {
         // ✅ tu backend normalmente responde { success: true, data: [...] }

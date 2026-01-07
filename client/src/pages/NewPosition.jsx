@@ -8,7 +8,7 @@
 // ==============================================
 
 import React, { useState, useEffect, useMemo } from "react";
-import axios from "axios";
+import api from "../services/api";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 
@@ -33,12 +33,14 @@ import {
 
 import { brokerIcons } from "../utils/brokerIcons";
 import { STRATEGIES, STRATEGY_OPTIONS } from "../components/strategies";
+import { useAuth } from "../context/AuthContext";
 
 // ==============================================
 // MAIN COMPONENT
 // ==============================================
 export default function NewPosition() {
   const navigate = useNavigate();
+  const { accessToken } = useAuth();
 
   // --------- GENERAL STATES ---------
   const [symbol, setSymbol] = useState("");
@@ -404,6 +406,10 @@ export default function NewPosition() {
   // ==============================================
   // LOAD QUOTES (Tradier per FINAL legs)
   // ==============================================
+  const occKey = useMemo(
+    () => finalLegs.map((l) => l.occSymbol).filter(Boolean).join(","),
+    [finalLegs]
+  );
   useEffect(() => {
     const optionLegs = finalLegs.filter(
       (l) =>
@@ -430,21 +436,25 @@ export default function NewPosition() {
     return () => {
       cancelled = true;
     };
-  }, [finalLegs.map((l) => l.occSymbol).join(",")]);
+  }, [occKey]);
 
   // ==============================================
   // BACKEND STRATEGY VALIDATION
   // Shows user-friendly guide if backend returns { guide }
   // ==============================================
   useEffect(() => {
+    // 🔒 No validar si no hay sesión lista
+    if (!accessToken) return;
+
+    // 🔹 Reset si no hay datos mínimos
     if (!strategy || !finalLegs.length) {
       setStrategyError("");
       return;
     }
 
-    // wait until all options legs have numeric premium
+    // 🔹 Validar que todas las legs tengan premium válido
     const ready = finalLegs.every((l) => {
-      if (!l.optionType) return true; // ignore stock
+      if (!l.optionType) return true;
       return l.premium !== "" && Number.isFinite(Number(l.premium));
     });
 
@@ -455,25 +465,37 @@ export default function NewPosition() {
 
     setValidatingStrategy(true);
 
-    axios
-      .post("/api/positions/validate", {
-        strategy, // already lowercase key
-        legs: finalLegs.map((l) => ({
-          ...l,
-          premium: Number(l.premium),
-          // IMPORTANT: backend validator expects optionType in lowercase ("call"/"put")
-          optionType: l.optionType ? String(l.optionType).toLowerCase() : l.optionType,
-        })),
-      })
+    // 🛑 AbortController para cancelar requests viejos
+    const controller = new AbortController();
+
+    api
+      .post(
+        "/api/positions/validate",
+        {
+          strategy,
+          legs: finalLegs.map((l) => ({
+            ...l,
+            premium: Number(l.premium),
+            optionType: l.optionType
+              ? String(l.optionType).toLowerCase()
+              : l.optionType,
+          })),
+        },
+        {
+          signal: controller.signal,
+        }
+      )
       .then(() => {
         setStrategyError("");
       })
       .catch((err) => {
+        // 🚫 Ignorar cancelaciones
+        if (err.name === "CanceledError") return;
+
         const msg = err?.response?.data?.error;
         const guide = err?.response?.data?.guide;
 
         if (guide) {
-          // guide = { example, rules: [] }
           setStrategyError(
             `${msg || "Invalid strategy"}\n\n` +
               `Example: ${guide.example}\n` +
@@ -483,8 +505,15 @@ export default function NewPosition() {
           setStrategyError(msg || "Invalid strategy");
         }
       })
-      .finally(() => setValidatingStrategy(false));
-  }, [strategy, finalLegs]);
+      .finally(() => {
+        setValidatingStrategy(false);
+      });
+
+    // 🧹 Cleanup — aborta requests anteriores
+    return () => {
+      controller.abort();
+    };
+  }, [strategy, JSON.stringify(finalLegs), accessToken]);
 
   // ==============================
   // (metrics + risk curve + save + UI) in PART 2/3 and PART 3/3
@@ -987,7 +1016,7 @@ const savePositionFactory = ({
         revenue: metrics.netPremiumPerShare,
       };
 
-      await axios.post("/api/positions", payload);
+      await api.post("/api/positions", payload);
       navigate("/positions");
     } catch (err) {
       console.error(err);
@@ -1367,7 +1396,10 @@ function LegBuilder({
 
   // push to parent
   useEffect(() => {
-    setFinalLegs(localLegs);
+    setFinalLegs((prev) => {
+      if (JSON.stringify(prev) === JSON.stringify(localLegs)) return prev;
+      return localLegs;
+    });
   }, [localLegs, setFinalLegs]);
 
   

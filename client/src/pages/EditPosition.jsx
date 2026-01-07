@@ -1,6 +1,6 @@
 // src/pages/EditPosition.jsx
 import React, { useEffect, useState } from "react";
-import axios from "axios";
+import api from "../services/api";
 import { useParams } from "react-router-dom";
 import PositionEditor from "../components/PositionEditor";
 import { useLocation } from "react-router-dom";
@@ -15,7 +15,7 @@ export default function EditPosition() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await axios.get(`/api/positions/${id}`);
+        const res = await api.get(`/api/positions/${id}`);
         setPosition(res.data.data);
       } catch (err) {
         console.error("Error loading position", err);
@@ -29,9 +29,9 @@ export default function EditPosition() {
 
   const saveChanges = async (payload) => {
     if (isRoll) {
-      await axios.post(`/api/positions/${id}/roll`, payload);
+      await api.post(`/api/positions/${id}/roll`, payload);
     } else {
-      await axios.put(`/api/positions/${id}`, payload);
+      await api.put(`/api/positions/${id}`, payload);
     }
 
     window.location.href = "/positions";

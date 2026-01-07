@@ -23,7 +23,7 @@ export default function Login() {
       const res = await api.post("/api/auth/login", {
         email,
         password,
-        ip: "localhost-client",
+        ip: window.location.hostname,
       });
 
       // ⭐ AHORA SE ENVÍA EL VALOR DEL CHECKBOX
