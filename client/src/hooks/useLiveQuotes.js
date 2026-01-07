@@ -1,5 +1,5 @@
 // src/hooks/useLiveQuotes.js
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchOptionQuotesByLegs } from "../services/tradierService";
 
 // Construye símbolo OCC (e.g., SNAP251114C00008500)
@@ -21,30 +21,54 @@ function buildOccSymbol(leg, baseSymbol = "") {
   }
 }
 
-  /**
-   * Hook de actualización en vivo usando Tradier (polling)
-   * - Inyecta en cada leg: bid/ask/last/change/prevClose, greeks{}, impliedVolatility
-   * - El resumen general (Positions.jsx) usa esos campos para Delta/Theta/IV
-   */
-  export function useLiveQuotes(positions = [], refreshMs = 15000) {
-    const [updatedPositions, setUpdatedPositions] = useState(positions);
+/**
+ * Hook de actualización en vivo usando Tradier (polling)
+ * - Inyecta en cada leg: bid/ask/last/change/prevClose, greeks{}, impliedVolatility
+ * - El resumen general (Positions.jsx) usa esos campos para Delta/Theta/IV
+ */
+export function useLiveQuotes(positions = [], refreshMs = 15000) {
+  const [updatedPositions, setUpdatedPositions] = useState(positions);
 
-    useEffect(() => setUpdatedPositions(positions), [positions]);
+  // ✅ refs para evitar reiniciar interval cada render
+  const latestPositionsRef = useRef(positions);
+  const runningRef = useRef(false);
+  const mountedRef = useRef(true);
 
-    useEffect(() => {
-    if (!positions.length) return;
+  // Siempre mantener el ref actualizado
+  useEffect(() => {
+    latestPositionsRef.current = positions;
+    setUpdatedPositions(positions); // mantiene tu comportamiento actual
+  }, [positions]);
 
-    // 🔥 1) Ignorar posiciones cerradas
-    const openPositions = positions.filter(p => p.status !== "Closed");
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-    if (!openPositions.length) {
-      setUpdatedPositions(positions); // nada que actualizar
-      return;
-    }
-
+  useEffect(() => {
     async function updateQuotes() {
+      // ✅ Evita overlap (si tarda, no dispares otra encima)
+      if (runningRef.current) return;
+      runningRef.current = true;
+
       try {
-        // 2) Solo pedimos quotes para posiciones abiertas
+        const currentPositions = latestPositionsRef.current || [];
+
+        if (!currentPositions.length) {
+          if (mountedRef.current) setUpdatedPositions(currentPositions);
+          return;
+        }
+
+        // 🔥 1) Ignorar posiciones cerradas
+        const openPositions = currentPositions.filter((p) => p.status !== "Closed");
+        if (!openPositions.length) {
+          if (mountedRef.current) setUpdatedPositions(currentPositions);
+          return;
+        }
+
+        // 2) Construir legs de posiciones abiertas
         const allLegs = openPositions.flatMap((p) =>
           (p.legs || []).map((leg) => ({
             ...leg,
@@ -52,31 +76,33 @@ function buildOccSymbol(leg, baseSymbol = "") {
           }))
         );
 
-        const legsWithOCC = allLegs.map((leg) => ({
-          ...leg,
-          occSymbol: leg.occSymbol || buildOccSymbol(leg, leg.baseSymbol),
-        }));
+        // 3) Generar OCC y filtrar válidos
+        const legsWithOCC = allLegs
+          .map((leg) => ({
+            ...leg,
+            occSymbol: leg.occSymbol || buildOccSymbol(leg, leg.baseSymbol),
+          }))
+          .filter((l) => l.occSymbol);
 
-        const validLegs = legsWithOCC.filter((l) => l.occSymbol);
-
-        if (!validLegs.length) {
-          setUpdatedPositions(positions);
+        if (!legsWithOCC.length) {
+          if (mountedRef.current) setUpdatedPositions(currentPositions);
           return;
         }
 
-        const quotesResp = await fetchOptionQuotesByLegs(validLegs);
-
-        let quotesBySym = {};
-        if (Array.isArray(quotesResp)) {
-          quotesResp.forEach((q) => {
-            if (q?.symbol) quotesBySym[q.symbol] = q;
-          });
-        } else if (quotesResp && typeof quotesResp === "object") {
-          quotesBySym = quotesResp;
+        // ✅ DEDUPE: si hay legs repetidos, no pidas quotes duplicados
+        const seen = new Set();
+        const dedupedLegs = [];
+        for (const l of legsWithOCC) {
+          if (!seen.has(l.occSymbol)) {
+            seen.add(l.occSymbol);
+            dedupedLegs.push(l);
+          }
         }
 
-        // 🔥 3) NO actualizar posiciones cerradas
-        const newPos = positions.map((p) => {
+        const quotesBySym = (await fetchOptionQuotesByLegs(dedupedLegs)) || {};
+
+        // 4) Actualizar posiciones (sin tocar las cerradas)
+        const newPos = currentPositions.map((p) => {
           if (p.status === "Closed") return p;
 
           const updatedLegs = (p.legs || []).map((leg) => {
@@ -84,6 +110,8 @@ function buildOccSymbol(leg, baseSymbol = "") {
             const q = occ ? quotesBySym[occ] : null;
             if (!q) return leg;
 
+            // ⚠️ Tu service ya normaliza delta/theta/impliedVol.
+            // Aquí mantenemos compatibilidad total con tu UI.
             const greeks = q.greeks || {
               delta: q.delta,
               theta: q.theta,
@@ -129,26 +157,27 @@ function buildOccSymbol(leg, baseSymbol = "") {
 
           const avgLast =
             updatedLegs.length > 0
-              ? updatedLegs.reduce(
-                  (sum, l) => sum + (Number(l.livePrice) || 0),
-                  0
-                ) / updatedLegs.length
+              ? updatedLegs.reduce((sum, l) => sum + (Number(l.livePrice) || 0), 0) /
+                updatedLegs.length
               : 0;
 
           return { ...p, legs: updatedLegs, livePrice: avgLast };
         });
 
-        setUpdatedPositions(newPos);
+        if (mountedRef.current) setUpdatedPositions(newPos);
       } catch (err) {
         console.error("❌ Error actualizando quotes:", err);
+      } finally {
+        runningRef.current = false;
       }
     }
 
+    // ✅ dispara una vez al montar + interval estable
     updateQuotes();
-    const interval = setInterval(updateQuotes, refreshMs);
-    return () => clearInterval(interval);
-  }, [positions, refreshMs]);
+    const id = setInterval(updateQuotes, refreshMs);
 
-  
+    return () => clearInterval(id);
+  }, [refreshMs]);
+
   return updatedPositions;
 }

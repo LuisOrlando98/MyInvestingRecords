@@ -116,7 +116,7 @@ router.post("/login", authLimiter, async (req, res) => {
 });
 
 /* ============================================================
-   REFRESH TOKEN
+   REFRESH TOKEN (PRO)
 ============================================================ */
 router.post("/refresh", async (req, res) => {
   try {
@@ -125,13 +125,21 @@ router.post("/refresh", async (req, res) => {
       return res.status(401).json({ msg: "No refresh token" });
     }
 
-    const user = await User.findOne({ refreshToken });
-    if (!user) {
+    // 1) verify firma/exp
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    } catch (err) {
       return res.status(403).json({ msg: "Invalid refresh token" });
     }
 
-    jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    // 2) find user and match stored token
+    const user = await User.findById(decoded.id);
+    if (!user || user.refreshToken !== refreshToken) {
+      return res.status(403).json({ msg: "Refresh token mismatch" });
+    }
 
+    // 3) issue new access token
     const newAccessToken = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
@@ -141,7 +149,7 @@ router.post("/refresh", async (req, res) => {
     res.json({ accessToken: newAccessToken });
   } catch (err) {
     console.error("REFRESH ERROR:", err);
-    res.status(403).json({ msg: "Invalid refresh token" });
+    res.status(500).json({ msg: "Refresh failed" });
   }
 });
 

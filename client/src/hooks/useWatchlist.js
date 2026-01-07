@@ -1,7 +1,11 @@
-// client/src/hooks/useWatchlist.js
 import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../services/api";
 import { socket } from "../lib/socket";
+
+/* =========================================================
+   CONSTANTES
+========================================================= */
+const ORDER_KEY = "mir_watchlist_order";
 
 /* =========================================================
    LOGO PRELOAD CACHE
@@ -9,12 +13,8 @@ import { socket } from "../lib/socket";
 const logoCache = new Set();
 const preloadLogo = (url) => {
   if (!url || logoCache.has(url)) return;
-
   const img = new Image();
-  const markCached = () => logoCache.add(url);
-
-  img.onload = markCached;
-  img.onerror = markCached;
+  img.onload = img.onerror = () => logoCache.add(url);
   img.src = url;
 };
 
@@ -63,18 +63,50 @@ export default function useWatchlist() {
   const [symbols, setSymbols] = useState([]);
   const [quotes, setQuotes] = useState({});
   const [meta, setMeta] = useState({});
-  const [spark, setSpark] = useState({});
   const [loading, setLoading] = useState(true);
 
   const visible = usePageVisible();
   const poller = useRef(null);
 
   /* =========================================================
-     LOAD QUOTES (FAST — NO META / NO SPARK)
+     LOAD WATCHLIST (ORDER SAFE)
+  ========================================================= */
+  const loadWatchlist = useCallback(async () => {
+    const r = await safeAPI(() => api.get("/api/watchlist"));
+    if (!r) return;
+
+    const serverSymbols = (r.data.symbols || []).map((s) =>
+      s.toUpperCase()
+    );
+
+    const savedOrder = JSON.parse(
+      localStorage.getItem(ORDER_KEY) || "[]"
+    );
+
+    const ordered =
+      savedOrder.length > 0
+        ? [
+            ...savedOrder.filter((s) => serverSymbols.includes(s)),
+            ...serverSymbols.filter((s) => !savedOrder.includes(s)),
+          ]
+        : serverSymbols;
+
+    localStorage.setItem(ORDER_KEY, JSON.stringify(ordered));
+
+    setSymbols(ordered);
+    setMeta(r.data.meta || {});
+    setLoading(false);
+
+    // initial fast quotes
+    await loadQuotesFast(ordered);
+  }, []);
+
+  /* =========================================================
+     FAST QUOTES (NO REORDER)
   ========================================================= */
   const loadQuotesFast = useCallback(
     async (customSymbols) => {
-      const tickers = customSymbols?.length ? customSymbols : symbols;
+      const tickers = customSymbols || symbols;
       if (!tickers.length) return;
 
       const r = await safeAPI(() =>
@@ -83,44 +115,22 @@ export default function useWatchlist() {
       if (!r) return;
 
       setQuotes((prev) => {
-        const out = {};
+        const next = { ...prev };
         for (const s of Object.keys(r.data.quotes || {})) {
-          out[s] = {
-            prevPrice: prev[s]?.price ?? null,
+          next[s] = {
+            ...prev[s],
             ...r.data.quotes[s],
           };
         }
-        return out;
+        return next;
       });
     },
     [symbols]
   );
 
   /* =========================================================
-     LOAD WATCHLIST (META + INITIAL SPARK)
-========================================================= */
-  const loadWatchlist = useCallback(async () => {
-    const r = await safeAPI(() => api.get("/api/watchlist"));
-    if (!r) return;
-
-    const syms = r.data.symbols || [];
-
-    setSymbols(syms);
-    setMeta(r.data.meta || {});
-    setLoading(false);
-
-    // 1️⃣ Quotes rápidos
-    await loadQuotesFast(syms);
-
-    // 2️⃣ Spark SOLO una vez (batch pesado)
-    if (syms.length) {
-      const br = await safeAPI(() =>
-        api.post("/api/market/batch", { tickers: syms })
-      );
-      if (br?.data?.spark) setSpark(br.data.spark);
-    }
-  }, [loadQuotesFast]);
-
+     INIT LOAD
+  ========================================================= */
   useEffect(() => {
     loadWatchlist();
   }, [loadWatchlist]);
@@ -129,24 +139,23 @@ export default function useWatchlist() {
      PRELOAD LOGOS
   ========================================================= */
   useEffect(() => {
-    const logosList = Object.values(meta || {})
+    Object.values(meta)
       .map((m) => m?.logo)
-      .filter(Boolean);
-
-    logosList.forEach(preloadLogo);
+      .filter(Boolean)
+      .forEach(preloadLogo);
   }, [meta]);
 
   /* =========================================================
-     WEBSOCKET LIVE PRICES (SUBSCRIPTIONS)
+     SOCKET LIVE PRICES
   ========================================================= */
   useEffect(() => {
     if (!symbols.length) return;
 
-    // Subscribe a los símbolos actuales
     socket.emit("subscribe", { symbols });
 
     const onPrice = (d) => {
       if (!d?.symbol) return;
+
       setQuotes((prev) => ({
         ...prev,
         [d.symbol]: {
@@ -154,8 +163,6 @@ export default function useWatchlist() {
           price: d.price,
           changePercent: d.changePercent,
           changeAmount: d.changeAmount,
-          volume: d.volume,
-          marketSession: d.marketSession,
         },
       }));
     };
@@ -170,8 +177,6 @@ export default function useWatchlist() {
 
   /* =========================================================
      LIGHT POLLING (VISIBILITY AWARE)
-     - solo quotes-fast
-     - fallback si socket duerme
   ========================================================= */
   useEffect(() => {
     if (poller.current) {
@@ -181,13 +186,13 @@ export default function useWatchlist() {
 
     if (!visible || !symbols.length) return;
 
-    poller.current = setInterval(loadQuotesFast, 20000); // fallback suave
+    poller.current = setInterval(() => {
+      loadQuotesFast();
+    }, 20000);
 
     return () => {
-      if (poller.current) {
-        clearInterval(poller.current);
-        poller.current = null;
-      }
+      if (poller.current) clearInterval(poller.current);
+      poller.current = null;
     };
   }, [visible, symbols, loadQuotesFast]);
 
@@ -198,10 +203,18 @@ export default function useWatchlist() {
     sym = sym.toUpperCase().trim();
     if (!sym) return { success: false };
 
+    if (symbols.includes(sym)) {
+      return { success: false, error: "Duplicate" };
+    }
+
     try {
       const r = await api.post("/api/watchlist/add", { symbol: sym });
-      setSymbols(r.data.watchlist.symbols);
-      setMeta(r.data.watchlist.meta);
+
+      const next = [sym, ...symbols];
+      setSymbols(next);
+      setMeta(r.data.watchlist.meta || meta);
+
+      localStorage.setItem(ORDER_KEY, JSON.stringify(next));
       return { success: true };
     } catch (err) {
       if (err.response?.status === 400) {
@@ -215,36 +228,35 @@ export default function useWatchlist() {
      REMOVE SYMBOL
   ========================================================= */
   const removeSymbol = async (sym) => {
-    const r = await safeAPI(() =>
+    await safeAPI(() =>
       api.post("/api/watchlist/remove", { symbol: sym })
     );
-    if (!r) return;
 
-    setSymbols(r.data.watchlist.symbols);
-    setMeta(r.data.watchlist.meta);
+    const next = symbols.filter((s) => s !== sym);
+    setSymbols(next);
+    localStorage.setItem(ORDER_KEY, JSON.stringify(next));
   };
 
   /* =========================================================
-     REORDER (frontend only)
+     REORDER (PERSISTED)
   ========================================================= */
   const reorderSymbols = (list) => {
-    setSymbols(list);
+    setSymbols((prev) => {
+      if (
+        prev.length === list.length &&
+        prev.every((s, i) => s === list[i])
+      ) {
+        return prev; // no-op
+      }
+      localStorage.setItem(ORDER_KEY, JSON.stringify(list));
+      return list;
+    });
   };
-
-  /* =========================================================
-     DERIVED LOGOS
-  ========================================================= */
-  const logos = {};
-  for (const s of symbols) {
-    logos[s] = meta?.[s]?.logo || null;
-  }
 
   return {
     symbols,
     quotes,
-    logos,
     meta,
-    spark,
     loading,
     addSymbol,
     removeSymbol,

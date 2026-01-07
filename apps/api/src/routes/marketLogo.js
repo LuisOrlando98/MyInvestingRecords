@@ -46,7 +46,6 @@ router.get("/:symbol", async (req, res) => {
   data.logoUrl && data.logoUrl.startsWith("http")
     ? data.logoUrl
     : `https://financialmodelingprep.com/image-stock/${symbol}.png`;
-    
     return res.json({ name, logo });
   } catch (err) {
     console.log("NASDAQ ERROR:", err.message);

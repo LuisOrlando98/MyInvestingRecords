@@ -1,5 +1,10 @@
-// src/components/watchlist/Watchlist.jsx
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+} from "react";
 
 import {
   DndContext,
@@ -24,28 +29,37 @@ import useWatchlist from "../../hooks/useWatchlist";
 import SortableItem from "./SortableItem";
 import WatchlistItem from "./WatchlistItem";
 
-
-
-/* ---------------------------------------------------------- MAIN WATCHLIST */
+/* =========================================================
+   MAIN WATCHLIST
+========================================================= */
 export default function Watchlist() {
   const {
     symbols,
     quotes,
     meta,
-    addSymbol,     // 👈 debe devolver { success, error }
+    addSymbol,
     removeSymbol,
     reorderSymbols,
   } = useWatchlist();
 
+  /* =========================================================
+     DND SENSORS
+  ========================================================= */
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
     })
   );
 
+  /* =========================================================
+     UI STATE
+  ========================================================= */
   const [editMode, setEditMode] = useState(false);
 
-  // ADD STATE
+  // ✅ Search (frontend-only)
+  const [search, setSearch] = useState("");
+
+  // Add UI
   const [showAdd, setShowAdd] = useState(false);
   const [newSymbol, setNewSymbol] = useState("");
   const [addError, setAddError] = useState("");
@@ -53,23 +67,51 @@ export default function Watchlist() {
 
   const inputRef = useRef(null);
 
-  /* ------------------------------------------------- FOCUS WHEN OPEN INPUT */
+  /* =========================================================
+     AUTO FOCUS INPUT
+  ========================================================= */
   useEffect(() => {
-    if (showAdd) {
-      const t = setTimeout(() => {
-        if (inputRef.current) {
-          inputRef.current.focus();
-          inputRef.current.select();
-        }
-      }, 120);
-      return () => clearTimeout(t);
-    }
+    if (!showAdd) return;
+
+    const t = setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 120);
+
+    return () => clearTimeout(t);
   }, [showAdd]);
 
-  /* ------------------------------------------------- DRAG END */
+  /* =========================================================
+     FILTERED SYMBOLS (FAST)
+  ========================================================= */
+  const renderedSymbols = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return symbols;
 
-   const onDragEnd = useCallback(
+    return symbols.filter((sym) => {
+      const company =
+        meta[sym]?.company ||
+        quotes[sym]?.longName ||
+        quotes[sym]?.shortName ||
+        sym;
+
+      return (
+        sym.toLowerCase().includes(q) ||
+        String(company).toLowerCase().includes(q)
+      );
+    });
+  }, [symbols, search, meta, quotes]);
+
+  // ✅ Si hay filtro, no permitimos drag reorder para no romper orden
+  const dragEnabled = !search.trim();
+
+  /* =========================================================
+     DRAG END (PERSISTENTE)
+  ========================================================= */
+  const onDragEnd = useCallback(
     (e) => {
+      if (!dragEnabled) return;
+
       const { active, over } = e;
       if (!over || active.id === over.id) return;
 
@@ -79,31 +121,22 @@ export default function Watchlist() {
 
       reorderSymbols(arrayMove(symbols, oldIndex, newIndex));
     },
-    [reorderSymbols, symbols]
+    [dragEnabled, symbols, reorderSymbols]
   );
 
-  /* ------------------------------------------------- DELETE */
-   const handleDelete = useCallback(
+  /* =========================================================
+     DELETE
+  ========================================================= */
+  const handleDelete = useCallback(
     (sym) => {
       removeSymbol(sym);
     },
     [removeSymbol]
   );
 
-  /* ------------------------------------------------- ABRIR / CERRAR ADD */
-  const openAdd = () => {
-    setShowAdd(true);
-    setAddError("");
-  };
-
-  const closeAdd = () => {
-    setShowAdd(false);
-    setNewSymbol("");
-    setAddError("");
-    setAdding(false);
-  };
-
-  /* ------------------------------------------------- ADD (usa addSymbol del hook) */
+  /* =========================================================
+     ADD SYMBOL
+  ========================================================= */
   const handleAdd = async () => {
     const raw = newSymbol.trim().toUpperCase();
     if (!raw || adding) return;
@@ -112,137 +145,130 @@ export default function Watchlist() {
     setAdding(true);
 
     try {
-      const res = await addSymbol(raw); // 👈 tu hook debe hacer validación
+      const res = await addSymbol(raw);
 
-      if (!res || !res.success) {
-        if (res?.error === "Duplicate") {
-          setAddError("Already in watchlist.");
-        } else if (res?.error === "NotFound") {
-          setAddError("Symbol does not exist.");
-        } else {
-          setAddError("Invalid symbol.");
-        }
-        setAdding(false);
+      if (!res?.success) {
+        if (res?.error === "Duplicate") setAddError("Already in watchlist.");
+        else if (res?.error === "NotFound") setAddError("Symbol not found.");
+        else setAddError("Invalid symbol.");
         return;
       }
 
-      // éxito
       setNewSymbol("");
       setShowAdd(false);
-    } catch (err) {
-      console.error("Add symbol error:", err?.message);
-      setAddError("Unexpected error. Try again.");
+    } catch {
+      setAddError("Unexpected error.");
     } finally {
       setAdding(false);
     }
   };
 
-  const handleKey = (e) => {
-    if (e.key === "Enter") handleAdd();
-    if (e.key === "Escape") closeAdd();
-  };
-
-  /* ------------------------------------------------- RENDER */
+  /* =========================================================
+     RENDER
+  ========================================================= */
   return (
-    <div
-      className="
-        relative
-        w-full h-full flex flex-col
-        bg-white rounded-3xl
-        shadow-[0_22px_60px_rgba(15,23,42,0.25)]
-        overflow-hidden border border-slate-200/80
-        pb-20   /* espacio para el + y el input */
-      "
-    >
-      {/* HEADER */}
-      <div
-        className="
-          px-4 sm:px-5 py-3
-          border-b border-slate-200/70
-          bg-gradient-to-b from-slate-50 to-white
-          flex items-center justify-between
-        "
-      >
-        <div className="flex items-center gap-2">
-          <h2 className="text-[15px] font-semibold text-slate-900">
-            Watchlist
-          </h2>
-          <span
+    <div className="relative w-full h-full flex flex-col bg-white rounded-3xl border border-slate-200/80 shadow-[0_22px_60px_rgba(15,23,42,0.25)] overflow-hidden pb-20">
+      {/* =====================================================
+          HEADER
+      ===================================================== */}
+      <div className="border-b border-slate-200/70 bg-gradient-to-b from-slate-50 to-white">
+        {/* TOP ROW */}
+        <div className="px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h2 className="text-[15px] font-semibold text-slate-900">
+              Watchlist
+            </h2>
+
+            <span
+              className="
+                text-[10px] px-2 py-0.5 rounded-full
+                border border-slate-200 bg-white
+                text-slate-500 uppercase tracking-[0.08em]
+              "
+            >
+              Live
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setEditMode((v) => !v)}
             className="
-              text-[10px] px-2 py-0.5
-              rounded-full
-              border border-slate-200 bg-white text-slate-500
-              uppercase tracking-[0.08em]
+              text-xs font-semibold
+              px-3 py-1.5 rounded-full
+              border border-slate-300 bg-white
+              hover:bg-slate-100
+              text-slate-800
+              shadow-sm transition
             "
           >
-            Live
-          </span>
+            {editMode ? "Done" : "Edit"}
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setEditMode((v) => !v)}
-          className="
-            text-xs font-semibold
-            px-3 py-1.5 rounded-full
-            border border-slate-300 bg-white hover:bg-slate-100
-            text-slate-800 shadow-[0_2px_4px_rgba(15,23,42,0.12)]
-            transition
-          "
-        >
-          {editMode ? "Done" : "Edit"}
-        </button>
+        {/* SEARCH ROW */}
+        <div className="px-4 pb-3">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search symbol or company…"
+            className="
+              w-full
+              rounded-xl
+              border border-slate-200
+              bg-white
+              px-3 py-2
+              text-xs text-slate-700
+              placeholder:text-slate-400
+              outline-none
+              focus:ring-2 focus:ring-blue-200
+            "
+          />
+        </div>
       </div>
 
-      {/* LISTA */}
+      {/* LIST */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {symbols.length === 0 && (
+        {renderedSymbols.length === 0 && (
           <div className="px-5 py-8 text-xs text-slate-500 text-center">
-            Your watchlist is empty. Tap the + button to add a symbol.
+            No matches.
           </div>
         )}
 
-        {symbols.length > 0 && (
+        {renderedSymbols.length > 0 && (
           <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              modifiers={[restrictToVerticalAxis, restrictToParentElement]}
-              onDragEnd={onDragEnd}
-            >
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+            onDragEnd={onDragEnd}
+          >
             <SortableContext
-              items={symbols}
+              items={renderedSymbols}
               strategy={verticalListSortingStrategy}
             >
-              {symbols.map((sym) => {
+              {renderedSymbols.map((sym) => {
                 const q = quotes[sym] || {};
-
                 const company =
-                  meta[sym]?.company ||
-                  quotes[sym]?.longName ||
-                  quotes[sym]?.shortName ||
-                  sym;
-                
-                const price = q.price;
-                const pct = q.changePercent;
-                const chg = q.changeAmount;
+                  meta[sym]?.company || q.longName || q.shortName || sym;
 
                 return (
                   <SortableItem key={sym} id={sym}>
                     {({ setNodeRef, attributes, listeners, style }) => (
-                      <div
-                          ref={setNodeRef}
-                          style={style}
-                          className="w-full max-w-full box-border touch-none"
-                        >
+                      <div ref={setNodeRef} style={style} className="touch-none">
                         <WatchlistItem
                           symbol={sym}
                           name={company}
-                          price={price}
-                          percent={pct}
-                          change={chg}
+                          price={q.price}
+                          percent={q.changePercent}
+                          change={q.changeAmount}
                           editMode={editMode}
                           onDelete={handleDelete}
-                          dragHandle={editMode ? { ...attributes, ...listeners } : {}}
+                          dragHandle={
+                            editMode && dragEnabled
+                              ? { ...attributes, ...listeners }
+                              : {}
+                          }
                         />
                       </div>
                     )}
@@ -254,114 +280,59 @@ export default function Watchlist() {
         )}
       </div>
 
-      {/* =========================================================
-      ADD SYMBOL — PREMIUM MINIMAL EDITION
-      ========================================================= */}
-            
-      {/* BOTÓN + SOLO SI NO ESTÁ ABIERTO */}
+      {/* ADD BUTTON */}
       {!showAdd && (
         <button
           type="button"
           onClick={() => {
             setShowAdd(true);
             setAddError("");
-            setTimeout(() => {
-              inputRef.current?.focus();
-              inputRef.current?.select();
-            }, 120);
           }}
-          className="
-            absolute bottom-5 right-6 z-20
-            w-12 h-12 rounded-full
-            bg-blue-600 hover:bg-blue-500 active:scale-95
-            text-white text-3xl font-bold leading-none
-            flex items-center justify-center
-            shadow-[0_12px_35px_rgba(37,99,235,0.48)]
-            transition
-          "
+          className="absolute bottom-5 right-6 z-20 w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-500 text-white text-3xl font-bold flex items-center justify-center shadow-[0_12px_35px_rgba(37,99,235,0.48)] transition active:scale-95"
         >
           +
         </button>
       )}
 
-      {/* =========================================================
-            OVERLAY + INPUT PREMIUM (TODO DENTRO DEL CARD)
-      ========================================================= */}
+      {/* ADD OVERLAY */}
       {showAdd && (
         <>
-          {/* overlay dentro del card */}
           <div
-            className="
-              absolute inset-0 z-30
-              bg-slate-900/5 backdrop-blur-sm
-              animate-fadeIn
-            "
-            onClick={closeAdd}
+            className="absolute inset-0 z-30 bg-slate-900/5 backdrop-blur-sm"
+            onClick={() => setShowAdd(false)}
           />
 
-          {/* tarjeta de input */}
-          <div
-            className="
-              absolute inset-x-4 bottom-5 z-40
-              flex justify-center
-              pointer-events-none
-            "
-          >
+          <div className="absolute inset-x-4 bottom-5 z-40 flex justify-center">
             <div
-              className="
-                relative max-w-xl w-full
-                bg-white rounded-2xl
-                shadow-[0_18px_45px_rgba(15,23,42,0.28)]
-                border border-slate-200/80
-                px-4 py-3 flex items-center gap-3
-                pointer-events-auto
-                animate-slideUpPremium
-              "
+              className="relative w-full max-w-xl bg-white rounded-2xl border border-slate-200/80 shadow-[0_18px_45px_rgba(15,23,42,0.28)] px-4 py-3 flex items-center gap-3"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* ERROR ENCIMA */}
               {addError && (
-                <p
-                  className="
-                    absolute -top-5 left-4
-                    text-[11px] font-semibold text-red-500
-                    animate-fadeIn
-                  "
-                >
+                <p className="absolute -top-5 left-4 text-[11px] font-semibold text-red-500">
                   {addError}
                 </p>
               )}
 
-              {/* BARRA PREMIUM */}
-              <span className="w-1.5 h-7 rounded-full bg-blue-400 bg-gradient-to-b from-blue-400 to-indigo-500" />
+              <span className="w-1.5 h-7 rounded-full bg-blue-500" />
 
-              {/* INPUT */}
               <input
                 ref={inputRef}
-                type="text"
-                placeholder="Enter symbol (AAPL)"
                 value={newSymbol}
+                placeholder="Enter symbol (AAPL)"
                 onChange={(e) => {
                   setNewSymbol(e.target.value.toUpperCase());
                   setAddError("");
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleAdd();
-                  if (e.key === "Escape") closeAdd();
+                  if (e.key === "Escape") setShowAdd(false);
                 }}
-                className="
-                  flex-1 bg-transparent border-none outline-none
-                  text-[15px] text-slate-900 placeholder:text-slate-400
-                  font-semibold tracking-wide
-                "
+                className="flex-1 bg-transparent outline-none text-[15px] font-semibold text-slate-900 placeholder:text-slate-400"
               />
-
-              
             </div>
           </div>
         </>
       )}
-
     </div>
   );
 }

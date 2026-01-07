@@ -1,105 +1,199 @@
 // src/services/tradierService.js
-import axios from "axios";
+import api from "./api";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+
+/* ============================================================
+   SIMPLE IN-MEMORY CACHE (FAST, NO BREAKING)
+   - evita llamadas repetidas mientras navegas
+   - NO persiste, no toca funcionalidad
+============================================================ */
+const _cache = new Map();
+/**
+ * @param {string} key
+ * @param {number} ttlMs
+ * @param {Function} fetcher  async () => data
+ */
+async function cached(key, ttlMs, fetcher) {
+  const now = Date.now();
+  const hit = _cache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value;
+
+  const value = await fetcher();
+  _cache.set(key, { value, expiresAt: now + ttlMs });
+  return value;
+}
+
+/* ============================================================
+   UTILS
+============================================================ */
+function uniq(arr) {
+  return Array.from(new Set(arr));
+}
+
+function normalizeQuoteItems(data) {
+  // soporta múltiples formatos que ya manejabas
+  if (Array.isArray(data?.quotes)) return data.quotes;
+  if (Array.isArray(data)) return data;
+  if (data?.quotes) return [data.quotes];
+  return [];
+}
 
 /**
- * Consulta las cotizaciones Tradier para una lista de símbolos OCC
- * Ejemplo: SNAP251114C00008500,SNAP251114P00007500
+ * ✅ Extrae IV correctamente desde distintas formas de Tradier
+ * y lo devuelve en porcentaje (0-100)
  */
-export async function fetchOptionQuotesByLegs(legs = []) {
+function extractImpliedVolPct(q) {
+  const ivRaw =
+    q.implied_volatility ??
+    q.mid_iv ??
+    q.bid_iv ??
+    q.ask_iv ??
+    q.smv_vol ??
+    q.greeks?.implied_volatility ??
+    q.greeks?.mid_iv ??
+    q.greeks?.bid_iv ??
+    q.greeks?.ask_iv ??
+    q.greeks?.smv_vol ??
+    null;
+
+  // Tradier normalmente da IV en decimal (0.47) → 47%
+  return ivRaw !== null && Number.isFinite(ivRaw) ? ivRaw * 100 : null;
+}
+
+/* ============================================================
+   OPTION QUOTES (OCC symbols)
+   - Usa api instance → cookies + refresh + LAN safe
+   - Dedupe symbols → menos payload, más rápido
+   - Soporta AbortController opcional (sin romper llamadas)
+============================================================ */
+export async function fetchOptionQuotesByLegs(legs = [], options = {}) {
   try {
-    const symbols = legs
-      .map((l) => l.occSymbol || l.symbol || l.optionSymbol)
-      .filter(Boolean)
-      .join(",");
+    const symbolsArr = uniq(
+      legs
+        .map((l) => l.occSymbol || l.symbol || l.optionSymbol)
+        .filter(Boolean)
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+    );
 
-    if (!symbols) return {};
+    if (!symbolsArr.length) return {};
 
-    const { data } = await axios.get(`${API_BASE}/api/tradier/quotes`, {
-      params: {
-        symbols,
-        greeks: true,
-      },
+    const symbols = symbolsArr.join(",");
+
+    const { data } = await api.get(`/api/tradier/quotes`, {
+      // baseURL ya está en api, pero esto ayuda si algún día cambias
+      baseURL: API_BASE,
+      params: { symbols, greeks: true },
+      // opcional: permitir abort sin cambiar el resto del app
+      signal: options.signal,
     });
 
+    const items = normalizeQuoteItems(data);
     const quotes = {};
-    const items = Array.isArray(data?.quotes)
-      ? data.quotes
-      : Array.isArray(data)
-      ? data
-      : [data?.quotes].filter(Boolean);
 
     items.forEach((q) => {
-      if (q && q.symbol) {
-        // ✅ Extraemos IV correctamente, ya sea en raíz o dentro de greeks
-        const ivRaw =
-          q.implied_volatility ??
-          q.mid_iv ??
-          q.bid_iv ??
-          q.ask_iv ??
-          q.smv_vol ??
-          q.greeks?.implied_volatility ??
-          q.greeks?.mid_iv ??
-          q.greeks?.bid_iv ??
-          q.greeks?.ask_iv ??
-          q.greeks?.smv_vol ??
-          null;
+      if (!q?.symbol) return;
 
-        quotes[q.symbol] = {
-          last: q.last,
-          bid: q.bid,
-          ask: q.ask,
-          prevClose: q.previous_close,
-          change: q.change,
-          delta: q.greeks?.delta ?? null,
-          theta: q.greeks?.theta ?? null,
-          impliedVol: ivRaw !== null ? ivRaw * 100 : null, // → % real
-        };
-      }
+      quotes[q.symbol] = {
+        last: q.last ?? null,
+        bid: q.bid ?? null,
+        ask: q.ask ?? null,
+        prevClose: q.previous_close ?? null,
+        change: q.change ?? null,
+        delta: q.greeks?.delta ?? null,
+        theta: q.greeks?.theta ?? null,
+        impliedVol: extractImpliedVolPct(q),
+      };
     });
 
     return quotes;
   } catch (err) {
+    // si fue abort, no lo trates como error real
+    if (err?.name === "CanceledError" || err?.name === "AbortError") {
+      return {};
+    }
     console.error("Tradier quote fetch error:", err);
     return {};
   }
 }
 
-// 🔹 Cargar expiraciones válidas (solo viernes o todos si es índice)
-export async function fetchExpirations(symbol) {
+/* ============================================================
+   EXPIRATIONS
+   - Cache corto (30s) → súper rápido al volver a abrir el modal
+============================================================ */
+export async function fetchExpirations(symbol, options = {}) {
   try {
-    const { data } = await axios.get(`${API_BASE}/api/tradier/expirations`, {
-      params: { symbol },
+    const sym = String(symbol || "").trim().toUpperCase();
+    if (!sym) return [];
+
+    const key = `exp:${sym}`;
+    return await cached(key, 30_000, async () => {
+      const { data } = await api.get(`/api/tradier/expirations`, {
+        baseURL: API_BASE,
+        params: { symbol: sym },
+        signal: options.signal,
+      });
+      return data?.data || [];
     });
-    return data?.data || [];
   } catch (err) {
+    if (err?.name === "CanceledError" || err?.name === "AbortError") return [];
     console.error("Error fetchExpirations:", err);
     return [];
   }
 }
 
-// 🔹 Cargar strikes disponibles para una fecha de expiración
-export async function fetchChains(symbol, expiration) {
+/* ============================================================
+   CHAINS
+   - Cache corto (20s) → reduce lag brutal al cambiar strikes/fechas
+============================================================ */
+export async function fetchChains(symbol, expiration, options = {}) {
   try {
-    const { data } = await axios.get(`${API_BASE}/api/tradier/chains`, {
-      params: { symbol, expiration },
+    const sym = String(symbol || "").trim().toUpperCase();
+    const exp = String(expiration || "").trim();
+    if (!sym || !exp) {
+      return { strikes: [], step: 1, calls: [], puts: [] };
+    }
+
+    const key = `chains:${sym}:${exp}`;
+    return await cached(key, 20_000, async () => {
+      const { data } = await api.get(`/api/tradier/chains`, {
+        baseURL: API_BASE,
+        params: { symbol: sym, expiration: exp },
+        signal: options.signal,
+      });
+      return data?.data || { strikes: [], step: 1, calls: [], puts: [] };
     });
-    return data?.data || { strikes: [], step: 1, calls: [], puts: [] };
   } catch (err) {
+    if (err?.name === "CanceledError" || err?.name === "AbortError") {
+      return { strikes: [], step: 1, calls: [], puts: [] };
+    }
     console.error("Error fetchChains:", err);
     return { strikes: [], step: 1, calls: [], puts: [] };
   }
 }
 
-// 🔹 Cargar precio spot del subyacente
-export async function fetchUnderlyingQuote(symbol) {
+/* ============================================================
+   UNDERLYING QUOTE
+   - Cache ultra corto (2s) → evita spam al tipear/buscar
+============================================================ */
+export async function fetchUnderlyingQuote(symbol, options = {}) {
   try {
-    const { data } = await axios.get(`${API_BASE}/api/tradier/quote/underlying`, {
-      params: { symbol },
+    const sym = String(symbol || "").trim().toUpperCase();
+    if (!sym) return null;
+
+    const key = `und:${sym}`;
+    return await cached(key, 2_000, async () => {
+      const { data } = await api.get(`/api/tradier/quote/underlying`, {
+        baseURL: API_BASE,
+        params: { symbol: sym },
+        signal: options.signal,
+      });
+      return data?.data?.last ?? null;
     });
-    return data?.data?.last ?? null;
   } catch (err) {
+    if (err?.name === "CanceledError" || err?.name === "AbortError") return null;
     console.error("Error fetchUnderlyingQuote:", err);
     return null;
   }

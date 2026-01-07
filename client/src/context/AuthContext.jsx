@@ -1,7 +1,8 @@
 // src/context/AuthContext.jsx
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../services/api";
+import { syncSocketAuth } from "../lib/socket";
 
 const AuthContext = createContext(null);
 
@@ -16,27 +17,30 @@ export function AuthProvider({ children }) {
     return saved ? JSON.parse(saved) : null;
   });
 
-  const [accessToken, setAccessToken] = useState(() => {
-    return localStorage.getItem("mir_accessToken");
-  });
+  const [accessToken, setAccessToken] = useState(() =>
+    localStorage.getItem("mir_accessToken")
+  );
 
-  const [refreshToken, setRefreshToken] = useState(() => {
-    return localStorage.getItem("mir_refreshToken");
-  });
+  // ⚠️ SE MANTIENE por compatibilidad (NO se elimina)
+  const [refreshToken, setRefreshToken] = useState(() =>
+    localStorage.getItem("mir_refreshToken")
+  );
 
-  const isAuthenticated = Boolean(accessToken && user);
+  const isAuthenticated = Boolean(user && accessToken);
 
   /* =====================================
-     SINCRONIZAR TOKEN CON AXIOS AL CARGAR
+     SINCRONIZAR TOKEN CON AXIOS
   ===================================== */
   useEffect(() => {
     if (accessToken) {
       api.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
+    } else {
+      delete api.defaults.headers.common.Authorization;
     }
   }, [accessToken]);
 
   /* =====================================
-     LOGIN (ALINEADO CON BACKEND)
+     LOGIN (MISMA FIRMA, MISMO COMPORTAMIENTO)
   ===================================== */
   const login = (jwt, refresh, userData, remember = false) => {
     setAccessToken(jwt);
@@ -48,10 +52,12 @@ export function AuthProvider({ children }) {
     localStorage.setItem("mir_accessToken", jwt);
     localStorage.setItem("mir_refreshToken", refresh);
     localStorage.setItem("mir_user", JSON.stringify(userData));
+
+    syncSocketAuth();
   };
 
   /* =====================================
-     LOGOUT LIMPIO
+     LOGOUT LIMPIO (MISMO COMPORTAMIENTO)
   ===================================== */
   const logout = () => {
     setUser(null);
@@ -68,7 +74,7 @@ export function AuthProvider({ children }) {
   };
 
   /* =====================================
-     ESCUCHAR LOGOUT GLOBAL (REFRESH FAIL)
+     LOGOUT GLOBAL (REFRESH FAIL)
   ===================================== */
   useEffect(() => {
     const forceLogout = () => {
@@ -81,31 +87,22 @@ export function AuthProvider({ children }) {
   }, []);
 
   /* =====================================
-     DEBUG OPCIONAL
+     MEMO CONTEXT VALUE (PERFORMANCE)
   ===================================== */
-  useEffect(() => {
-    console.log("🔐 Auth state:", {
-      isAuthenticated,
+  const contextValue = useMemo(
+    () => ({
       user,
-      accessToken: accessToken ? "✔️" : "❌",
-      refreshToken: refreshToken ? "✔️" : "❌",
-    });
-  }, [isAuthenticated, user, accessToken, refreshToken]);
+      accessToken,
+      refreshToken,
+      isAuthenticated,
+      login,
+      logout,
+    }),
+    [user, accessToken, refreshToken, isAuthenticated]
+  );
 
-  /* =====================================
-     CONTEXT VALUE
-  ===================================== */
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        accessToken,
-        refreshToken,
-        isAuthenticated,
-        login,
-        logout,
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

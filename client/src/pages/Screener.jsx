@@ -56,6 +56,41 @@ const fmtPrice = (v) =>
   Number.isFinite(v) ? `$${v.toFixed(2)}` : "—";
 
 /* ============================================================
+   SKELETON LOADING (UI ONLY)
+============================================================ */
+function ScreenerSkeleton({ cols = 6 }) {
+  const ROWS = 8;            // ajusta si quieres más filas
+  const TOTAL = cols * ROWS;
+
+  // paleta tipo mercado (verde / rojo / neutro)
+  const colors = useMemo(() => {
+    const palette = [
+      "rgba(34,197,94,0.18)",  // green
+      "rgba(239,68,68,0.18)",  // red
+      "rgba(229,231,235,0.9)", // gray
+    ];
+    return Array.from({ length: TOTAL }, () =>
+      palette[Math.floor(Math.random() * palette.length)]
+    );
+  }, [TOTAL]);
+
+  return (
+    <div
+      className="grid gap-2 animate-pulse"
+      style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+    >
+      {colors.map((bg, i) => (
+        <div
+          key={i}
+          className="h-[72px] rounded-xl border"
+          style={{ backgroundColor: bg }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
    FAST MARKET (REALTIME — NO ROMPER)
 ============================================================ */
 function useFastMarket(symbols, enabled) {
@@ -125,6 +160,7 @@ export default function Screener() {
 
   const [symbols, setSymbols] = useState([]);
   const [watchlistLoaded, setWatchlistLoaded] = useState(false);
+  const [loadingWatchlist, setLoadingWatchlist] = useState(true);
 
   const [mode, setMode] = useState("view");
   const [input, setInput] = useState("");
@@ -138,30 +174,64 @@ export default function Screener() {
   const dragFrom = useRef(null);
   const dragOver = useRef(null);
 
-  /* ---------- LOAD WATCHLIST ---------- */
+  /* ---------- LOAD WATCHLIST (PERSIST ORDER CORRECTLY) ---------- */
   useEffect(() => {
+    let alive = true;
+
     (async () => {
-      const r = await api.get("/api/watchlist");
-      const server = (r.data.symbols || []).map((s) => s.toUpperCase());
+      try {
+        const r = await api.get("/api/watchlist");
+        if (!alive) return;
 
-      const saved = JSON.parse(localStorage.getItem(ORDER_KEY) || "[]");
-      const ordered = [
-        ...saved.filter((s) => server.includes(s)),
-        ...server.filter((s) => !saved.includes(s)),
-      ];
+        const server = (r.data.symbols || []).map((s) => s.toUpperCase());
+        const saved = JSON.parse(localStorage.getItem(ORDER_KEY) || "[]");
 
-      setSymbols(ordered);
-      setWatchlistLoaded(true);
+        let ordered;
+
+        if (Array.isArray(saved) && saved.length > 0) {
+          // ✅ Respeta el orden del usuario
+          ordered = [
+            ...saved.filter((s) => server.includes(s)),
+            ...server.filter((s) => !saved.includes(s)),
+          ];
+        } else {
+          // ✅ Primer load: usa el orden del backend
+          ordered = server;
+        }
+
+        // ⚠️ Solo escribir en localStorage si realmente cambió
+        const prev = JSON.stringify(saved);
+        const next = JSON.stringify(ordered);
+
+        if (prev !== next) {
+          localStorage.setItem(ORDER_KEY, next);
+        }
+
+        setSymbols(ordered);
+      } catch (e) {
+        console.error("Failed loading watchlist", e);
+        setSymbols([]);
+      } finally {
+        if (alive) {
+          setWatchlistLoaded(true);
+          setLoadingWatchlist(false);
+        }
+      }
     })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
+    if (!watchlistLoaded) return; // ✅ evita borrar el orden con [] al inicio
     localStorage.setItem(ORDER_KEY, JSON.stringify(symbols));
-  }, [symbols]);
+  }, [symbols, watchlistLoaded, ORDER_KEY]);
 
   useEffect(() => {
-    localStorage.setItem(GRID_KEY, cols);
-  }, [cols]);
+    localStorage.setItem(GRID_KEY, String(cols));
+  }, [cols, GRID_KEY]);
 
   const market = useFastMarket(symbols, watchlistLoaded);
 
@@ -355,78 +425,104 @@ export default function Screener() {
           )}
         </div>
       </div>
+      
+        {/* LOADING STATE — Skeleton */}
+        {loadingWatchlist && (
+          <div className="mt-2">
+            <ScreenerSkeleton cols={cols} />
+          </div>
+        )}
 
-      {/* GRID */}
-      <div
-        className="grid gap-2"
-        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
-      >
-        {symbols.map((sym, i) => {
-          const isSearching = mode === "search" && searchValue.length > 0;
-          const isMatch = isSearching && sym.includes(searchValue);
-          const d = market[sym];
-          const pct = d?.regular?.pct;
-          const price = d?.regular?.price;
-
-          return (
-            <div
-              key={sym}
-              draggable={mode === "edit"}
-              onDragStart={() => (dragFrom.current = i)}
-              onDragOver={(e) => {
-                if (mode === "edit") {
-                  e.preventDefault();
-                  dragOver.current = i;
-                }
-              }}
-              onDrop={() => mode === "edit" && onDrop(i)}
-              onClick={() => {
-                if (mode !== "edit" && mode !== "search") {
-                  navigate(`/ticker/${sym}`);
-                }
-              }}
-              className={`relative h-[72px] rounded-xl text-center cursor-pointer
-                transition-all duration-200
-                ${
-                  isSearching
-                    ? isMatch
-                      ? "ring-2 ring-emerald-500 scale-[1.03] z-10"
-                      : "opacity-40 blur-[1px]"
-                    : ""
-                }
-                ${dragOver.current === i
-                  ? "border-2 border-dashed border-blue-500"
-                  : "border"}
-              `}
-              style={{ backgroundColor: heatColor(pct) }}
-            >
-              {mode === "edit" && (
-                <>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeSymbol(sym);
-                    }}
-                    className="absolute top-1 right-1 w-6 h-6 bg-white rounded-full
-                               flex items-center justify-center shadow
-                               hover:bg-red-50 hover:text-red-600 transition"
-                  >
-                    <X size={13} strokeWidth={2.5} />
-                  </button>
-
-                  <div className="absolute bottom-1 right-2 opacity-60">
-                    <GripVertical size={12} />
-                  </div>
-                </>
-              )}
-
-              <div className="mt-2 text-[11px] font-semibold">{sym}</div>
-              <div className="text-sm font-bold">{fmtPrice(price)}</div>
-              <div className="text-[11px] font-semibold">{fmtPct(pct)}</div>
+        {/* EMPTY STATE */}
+        {!loadingWatchlist && symbols.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-[50vh] gap-3 text-center">
+            <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
+              <Search className="text-gray-400" size={20} />
             </div>
-          );
-        })}
-      </div>
-    </div>
+            <p className="text-sm font-medium text-gray-600">
+              Your watchlist is empty
+            </p>
+            <p className="text-xs text-gray-400">
+              Click + to add your first symbol
+            </p>
+          </div>
+        )}
+
+        {/* GRID */}
+        {!loadingWatchlist && symbols.length > 0 && (
+          <div
+            className="grid gap-2"
+            style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+          >
+            {symbols.map((sym, i) => {
+              const isSearching = mode === "search" && searchValue.length > 0;
+              const isMatch = isSearching && sym.includes(searchValue);
+              const d = market[sym];
+              const pct = d?.regular?.pct;
+              const price = d?.regular?.price;
+
+              return (
+                <div
+                  key={sym}
+                  draggable={mode === "edit"}
+                  onDragStart={() => (dragFrom.current = i)}
+                  onDragOver={(e) => {
+                    if (mode === "edit") {
+                      e.preventDefault();
+                      dragOver.current = i;
+                    }
+                  }}
+                  onDrop={() => mode === "edit" && onDrop(i)}
+                  onClick={() => {
+                    if (mode !== "edit") {
+                      navigate(`/ticker/${sym}`);
+                    }
+                  }}
+                  className={`relative h-[72px] rounded-xl text-center cursor-pointer
+                    transition-all duration-200
+                    ${
+                      isSearching
+                        ? isMatch
+                          ? "ring-2 ring-emerald-500 scale-[1.03] z-10"
+                          : "opacity-40 blur-[1px]"
+                        : ""
+                    }
+                    ${
+                      dragOver.current === i
+                        ? "border-2 border-dashed border-blue-500"
+                        : "border"
+                    }
+                  `}
+                  style={{ backgroundColor: heatColor(pct) }}
+                >
+                  {mode === "edit" && (
+                    <>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeSymbol(sym);
+                        }}
+                        className="absolute top-1 right-1 w-6 h-6 bg-white rounded-full
+                                  flex items-center justify-center shadow
+                                  hover:bg-red-50 hover:text-red-600 transition"
+                      >
+                        <X size={13} strokeWidth={2.5} />
+                      </button>
+
+                      <div className="absolute bottom-1 right-2 opacity-60">
+                        <GripVertical size={12} />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="mt-2 text-[11px] font-semibold">{sym}</div>
+                  <div className="text-sm font-bold">{fmtPrice(price)}</div>
+                  <div className="text-[11px] font-semibold">{fmtPct(pct)}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+     </div>
   );
 }
