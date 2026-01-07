@@ -10,22 +10,24 @@ import EditPosition from "../pages/EditPosition";
 import Performance from "../pages/Performance";
 import Screener from "../pages/Screener";
 
-// 🔥 Nuevas rutas de usuario
+// 🔥 Auth pages
 import Login from "../pages/Login";
 import Register from "../pages/Register";
 import ForgotPassword from "../pages/ForgotPassword";
+import ResetPassword from "../pages/ResetPassword"; 
 import ProtectedRoute from "../components/ProtectedRoute";
 
 export default function AppRoutes() {
   return (
     <Routes>
 
-      {/* 🟢 Rutas públicas (sin estar logueado) */}
+      {/* 🟢 Rutas públicas */}
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} /> 
 
-      {/* 🔒 Rutas protegidas (requieren login) */}
+      {/* 🔒 Rutas protegidas */}
       <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
 
         <Route path="/" element={<Dashboard />} />

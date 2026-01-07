@@ -1,14 +1,18 @@
+/* ============================================================
+   ENV — DEBE SER LO PRIMERO (ANTES DE TODO)
+============================================================ */
 import dotenv from "dotenv";
-import path from "path";
-import { fileURLToPath } from "url";
+dotenv.config({ path: new URL("../.env", import.meta.url).pathname });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+/* ============================================================
+   NETWORK / DNS (después del env)
+============================================================ */
+import dns from "dns";
+dns.setDefaultResultOrder("ipv4first");
 
-dotenv.config({ path: path.resolve(__dirname, "../.env") });
-
-console.log("🔥 FINNHUB_API_KEY LOADED:", process.env.FINNHUB_API_KEY);
-
+/* ============================================================
+   CORE IMPORTS
+============================================================ */
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -17,10 +21,13 @@ import morgan from "morgan";
 import compression from "compression";
 import http from "http";
 
+/* ============================================================
+   INTERNAL MODULES
+============================================================ */
 import { initSocket } from "./utils/socket.js";
 import { authLimiter } from "./middleware/rateLimit.js";
-import alertsRoutes from "./routes/alerts.js";
 
+import alertsRoutes from "./routes/alerts.js";
 import newsRoutes from "./routes/news.js";
 import authRoutes from "./routes/auth.js";
 import adminRoutes from "./routes/admin.js";
@@ -34,6 +41,18 @@ import optionsRoutes from "./routes/options.js";
 import tradierRoutes from "./routes/tradier.js";
 import symbolsRoutes from "./routes/symbols.js";
 
+/* ============================================================
+   DEBUG (temporal — puedes borrar luego)
+============================================================ */
+console.log("SMTP_USER =", process.env.SMTP_USER);
+console.log("SMTP_PASS exists =", !!process.env.SMTP_PASS);
+console.log("SMTP_HOST =", process.env.SMTP_HOST);
+console.log("SMTP_PORT =", process.env.SMTP_PORT);
+console.log("🔥 FINNHUB_API_KEY LOADED:", process.env.FINNHUB_API_KEY);
+
+/* ============================================================
+   APP INIT
+============================================================ */
 const app = express();
 const PORT = process.env.PORT || 4000;
 
@@ -81,12 +100,12 @@ app.get("/", (req, res) => {
 });
 
 /* ============================================================
-   AUTH FIRST (with rate limit)
+   AUTH (FIRST)
 ============================================================ */
 app.use("/api/auth", authLimiter, authRoutes);
 
 /* ============================================================
-   OTHER SIMPLE ROUTES
+   ROUTES
 ============================================================ */
 app.use("/api/admin", adminRoutes);
 app.use("/api/finviz", finvizRoutes);
@@ -95,15 +114,8 @@ app.use("/api/tradier", tradierRoutes);
 app.use("/api/symbols", symbolsRoutes);
 app.use("/api/news", newsRoutes);
 
-/* ============================================================
-   WATCHLIST + LOGOS
-============================================================ */
 app.use("/api/watchlist", watchlistRoutes);
-app.use("/api/market/logo", marketLogoRoutes);  // ✔ ESTA ES LA BUENA
-
-/* ============================================================
-   MARKET DATA
-============================================================ */
+app.use("/api/market/logo", marketLogoRoutes);
 app.use("/api/market", marketDataRoutes);
 app.use("/api/positions", positionsRoutes);
 app.use("/api/performance", performanceRoutes);
@@ -118,7 +130,7 @@ app.use((err, req, res, next) => {
 });
 
 /* ============================================================
-   SERVER + MONGO + SOCKET.IO
+   SERVER + DB + SOCKET
 ============================================================ */
 mongoose
   .connect(process.env.MONGODB_URI)

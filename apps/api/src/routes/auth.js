@@ -6,6 +6,7 @@ import User from "../models/User.js";
 import { auth } from "../middleware/auth.js";
 import { authLimiter } from "../middleware/rateLimit.js";
 import { sendEmail } from "../utils/sendEmail.js";
+import { generateResetToken } from "../utils/generateResetToken.js";
 
 const router = express.Router();
 
@@ -193,24 +194,196 @@ router.post("/forgot-password", async (req, res) => {
     const { email } = req.body;
 
     const user = await User.findOne({ email });
+
+    // 🔒 Anti user-enumeration
     if (!user) {
       return res.json({ success: true });
     }
 
-    user.resetToken = crypto.randomUUID();
-    user.resetTokenExp = Date.now() + 15 * 60 * 1000;
+    const { rawToken, hashedToken } = generateResetToken();
+
+    user.passwordResetToken = hashedToken;
+    user.passwordResetExpires = Date.now() + 15 * 60 * 1000; // 15 min
     await user.save();
 
-    await sendEmail(
-      email,
-      "Reset your password",
-      `Your reset code: ${user.resetToken}`
-    );
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}`;
 
-    res.json({ success: true });
+    await sendEmail(
+      user.email,
+      "Security alert: reset your MyInvestingRecords password",
+          `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+          <title>Password Reset</title>
+        </head>
+
+        <body style="
+          margin:0;
+          padding:0;
+          background:#ffffff;
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+          color:#0f172a;
+        ">
+
+          <!-- Outer wrapper -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 12px;">
+            <tr>
+              <td align="center">
+
+                <!-- Card -->
+                <table width="100%" cellpadding="0" cellspacing="0" style="
+                  max-width:520px;
+                  background:#020617;
+                  border-radius:16px;
+                  border:1px solid #1e293b;
+                  padding:32px;
+                ">
+
+                  <!-- Logo -->
+                  <tr>
+                    <td align="center" style="padding-bottom:20px;">
+                      <table cellpadding="0" cellspacing="0">
+                        <tr>
+                          <td align="center" style="
+                            width:48px;
+                            height:48px;
+                            border-radius:12px;
+                            background:#10b981;
+                            font-weight:800;
+                            font-size:18px;
+                            color:#020617;
+                            line-height:48px;
+                            text-align:center;
+                          ">
+                            MI
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+
+                  <!-- Title -->
+                  <tr>
+                    <td align="center" style="padding-bottom:12px;">
+                      <h1 style="
+                        margin:0;
+                        font-size:22px;
+                        font-weight:700;
+                        color:#f8fafc;
+                      ">
+                        Reset your password
+                      </h1>
+                    </td>
+                  </tr>
+
+                  <!-- Message -->
+                  <tr>
+                    <td align="center" style="padding-bottom:20px;">
+                      <p style="
+                        margin:0;
+                        font-size:14px;
+                        line-height:1.6;
+                        color:#cbd5f5;
+                      ">
+                        We detected a request to change the password for your
+                        <strong>MyInvestingRecords</strong> account.
+                      </p>
+                    </td>
+                  </tr>
+
+                  <!-- Button -->
+                  <tr>
+                    <td align="center" style="padding-bottom:24px;">
+                      <a href="${resetUrl}" target="_blank" style="
+                        display:inline-block;
+                        padding:14px 22px;
+                        border-radius:10px;
+                        background:#10b981;
+                        color:#020617;
+                        font-size:14px;
+                        font-weight:700;
+                        text-decoration:none;
+                      ">
+                        Reset password
+                      </a>
+                    </td>
+                  </tr>
+
+                  <!-- Expiration -->
+                  <tr>
+                    <td align="center" style="padding-bottom:20px;">
+                      <p style="
+                        margin:0;
+                        font-size:12px;
+                        color:#94a3b8;
+                      ">
+                        This link will expire in <strong>15 minutes</strong>.
+                      </p>
+                    </td>
+                  </tr>
+
+                  <!-- Divider -->
+                  <tr>
+                    <td style="padding:16px 0;">
+                      <div style="height:1px;background:#1e293b;"></div>
+                    </td>
+                  </tr>
+
+                  <!-- Security warning -->
+                  <tr>
+                    <td align="center">
+                      <p style="
+                        margin:0;
+                        font-size:12px;
+                        line-height:1.6;
+                        color:#94a3b8;
+                      ">
+                        If you did <strong>not</strong> request this password change,
+                        please contact us immediately at<br/>
+                        <a href="mailto:luiso.rodriguezcabrera@gmail.com"
+                          style="color:#6ee7b7;text-decoration:none;font-weight:600;">
+                          luiso.rodriguezcabrera@gmail.com
+                        </a>
+                      </p>
+                    </td>
+                  </tr>
+
+                </table>
+
+                <!-- Footer -->
+                <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;margin-top:18px;">
+                  <tr>
+                    <td align="center">
+                      <p style="
+                        margin:0;
+                        font-size:11px;
+                        color:#64748b;
+                        line-height:1.5;
+                      ">
+                        © ${new Date().getFullYear()} MyInvestingRecords<br/>
+                        Secure trading & analytics platform
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+
+              </td>
+            </tr>
+          </table>
+
+        </body>
+        </html>
+        `
+      );
+
+
+    return res.json({ success: true });
   } catch (err) {
     console.error("FORGOT PASSWORD ERROR:", err);
-    res.status(500).json({ msg: "Failed to send reset token" });
+    return res.status(500).json({ msg: "Failed to process request" });
   }
 });
 
@@ -221,24 +394,47 @@ router.post("/reset-password", async (req, res) => {
   try {
     const { token, newPassword } = req.body;
 
+    if (!token || !newPassword) {
+      return res.status(400).json({ msg: "Invalid request" });
+    }
+
+    if (newPassword.length < 8) {
+      return res
+        .status(400)
+        .json({ msg: "Password must be at least 8 characters long" });
+    }
+
+    // 🔒 Hash del token recibido
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
     const user = await User.findOne({
-      resetToken: token,
-      resetTokenExp: { $gt: Date.now() },
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
     });
 
     if (!user) {
-      return res.status(400).json({ msg: "Invalid or expired token" });
+      return res
+        .status(400)
+        .json({ msg: "Invalid or expired reset token" });
     }
 
+    // 🔐 Cambiar contraseña
     user.password = await bcrypt.hash(newPassword, 10);
-    user.resetToken = null;
-    user.resetTokenExp = null;
+
+    // 🔥 Invalidar todo
+    user.passwordResetToken = null;
+    user.passwordResetExpires = null;
+    user.refreshToken = null; // logout global
+
     await user.save();
 
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
     console.error("RESET PASSWORD ERROR:", err);
-    res.status(500).json({ msg: "Password reset failed" });
+    return res.status(500).json({ msg: "Password reset failed" });
   }
 });
 

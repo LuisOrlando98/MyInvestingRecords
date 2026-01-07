@@ -7,12 +7,14 @@ export default function ResetPassword() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // token puede venir por link (?token=...)
   const tokenFromUrl = searchParams.get("token") || "";
 
   const [token, setToken] = useState(tokenFromUrl);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -45,9 +47,7 @@ export default function ResetPassword() {
 
       setMessage("Your password has been reset successfully.");
 
-      setTimeout(() => {
-        navigate("/login");
-      }, 1800);
+      setTimeout(() => navigate("/login"), 1800);
     } catch (err) {
       setError(
         err.response?.data?.msg ||
@@ -76,28 +76,25 @@ export default function ResetPassword() {
             Set a new password
           </h2>
 
-          <p className="text-sm text-slate-400 leading-relaxed">
+          <p className="text-sm text-slate-400">
             Choose a strong password to secure your account.
           </p>
         </div>
 
-        {/* Success */}
         {message && (
           <div className="mb-4 text-xs rounded-lg border border-emerald-400/40 bg-emerald-500/10 text-emerald-200 px-3 py-2">
             {message}
           </div>
         )}
 
-        {/* Error */}
         {error && (
           <div className="mb-4 text-xs rounded-lg border border-red-500/40 bg-red-500/10 text-red-200 px-3 py-2">
             {error}
           </div>
         )}
 
-        {/* Form */}
         <form className="space-y-4" onSubmit={handleSubmit}>
-          {/* Token (solo visible si no viene por URL) */}
+
           {!tokenFromUrl && (
             <div>
               <label className="text-xs text-slate-300 mb-1 block">
@@ -105,8 +102,7 @@ export default function ResetPassword() {
               </label>
               <input
                 type="text"
-                className="w-full px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-400"
-                placeholder="Enter the reset code"
+                className="w-full px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 required
@@ -119,15 +115,26 @@ export default function ResetPassword() {
             <label className="text-xs text-slate-300 mb-1 block">
               New password
             </label>
-            <input
-              type="password"
-              autoComplete="new-password"
-              className="w-full px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-400"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
+
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
+                className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                className="absolute inset-y-0 right-2 flex items-center text-slate-400 hover:text-slate-200 text-xs"
+              >
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </div>
           </div>
 
           {/* Confirm password */}
@@ -135,39 +142,39 @@ export default function ResetPassword() {
             <label className="text-xs text-slate-300 mb-1 block">
               Confirm new password
             </label>
-            <input
-              type="password"
-              autoComplete="new-password"
-              className="w-full px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-400"
-              placeholder="••••••••"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              required
-            />
+
+            <div className="relative">
+              <input
+                type={showConfirm ? "text" : "password"}
+                autoComplete="new-password"
+                className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-900/70 border border-slate-700 text-slate-100 text-sm"
+                placeholder="••••••••"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                required
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowConfirm(v => !v)}
+                className="absolute inset-y-0 right-2 flex items-center text-slate-400 hover:text-slate-200 text-xs"
+              >
+                {showConfirm ? "Hide" : "Show"}
+              </button>
+            </div>
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-semibold text-sm py-2.5 transition disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-emerald-900/40"
+            className="w-full mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-semibold text-sm py-2.5 transition disabled:opacity-60"
           >
-            {loading ? (
-              <>
-                <span className="h-4 w-4 border-2 border-slate-900/40 border-t-slate-900 rounded-full animate-spin" />
-                Updating password…
-              </>
-            ) : (
-              "Update password"
-            )}
+            {loading ? "Updating password…" : "Update password"}
           </button>
         </form>
 
-        {/* Footer */}
         <div className="mt-6 text-xs text-slate-400 text-center">
-          <Link
-            to="/login"
-            className="text-emerald-300 hover:text-emerald-200 hover:underline"
-          >
+          <Link to="/login" className="text-emerald-300 hover:underline">
             Back to sign in
           </Link>
         </div>

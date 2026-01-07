@@ -44,8 +44,8 @@ const UserSchema = new mongoose.Schema(
 
     // 🔹 Tokens - Advanced Auth 
     refreshToken: { type: String, default: null },
-    resetToken: { type: String, default: null },
-    resetTokenExp: { type: Date, default: null },
+    passwordResetToken: { type: String, default: null },
+    passwordResetExpires: { type: Date, default: null },
 
     // 🔹 Membership (Future)
     membership: {
