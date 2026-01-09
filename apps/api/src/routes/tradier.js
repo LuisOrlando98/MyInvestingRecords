@@ -9,9 +9,38 @@ const router = express.Router();
 const TOKEN = process.env.TRADIER_ACCESS_TOKEN;
 
 /* ============================================================
+   🚀 BATCH REAL DE TRADIER (INTERNO, SEGURO)
+   - NO rompe nada
+   - Devuelve MISMO formato que getOptionQuote
+   - Se usa SOLO en /quotes con fallback automático
+============================================================ */
+async function getOptionQuotesBatch(symbols = []) {
+  if (!symbols.length) return [];
+
+  const { data } = await axios.get(
+    "https://api.tradier.com/v1/markets/quotes",
+    {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Accept: "application/json",
+      },
+      params: {
+        symbols: symbols.join(","),
+        greeks: true,
+      },
+    }
+  );
+
+  const quote = data?.quotes?.quote;
+  if (!quote) return [];
+
+  return Array.isArray(quote) ? quote : [quote];
+}
+
+/* ============================================================
    GET /api/tradier/quote
-   - Accepts OCC symbol directly
-   - Or builds OCC from details
+   - Acepta OCC directamente
+   - O genera OCC desde params
 ============================================================ */
 router.get("/quote", async (req, res) => {
   try {
@@ -20,54 +49,80 @@ router.get("/quote", async (req, res) => {
     if (expiration && strike && type) {
       const generated = generateOccSymbol(symbol, expiration, strike, type);
       if (!generated) {
-        return res
-          .status(400)
-          .json({ success: false, error: "Invalid parameters for OCC symbol" });
+        return res.status(400).json({
+          success: false,
+          error: "Invalid parameters for OCC symbol",
+        });
       }
       symbol = generated;
     }
 
     if (!symbol) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Symbol is required" });
+      return res.status(400).json({
+        success: false,
+        error: "Symbol is required",
+      });
     }
 
     const data = await getOptionQuote(symbol);
     res.json({ success: true, data });
   } catch (err) {
     console.error("❌ Tradier /quote error:", err.message);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to fetch option quote" });
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch option quote",
+    });
   }
 });
 
 /* ============================================================
    GET /api/tradier/quotes
-   - Batch quotes
+   ✅ Batch REAL + fallback SEGURO
+   ❌ NO rompe frontend
 ============================================================ */
 router.get("/quotes", async (req, res) => {
   try {
     const { symbols } = req.query;
     if (!symbols) {
-      return res.status(400).json({ success: false, error: "Symbols are required" });
+      return res.status(400).json({
+        success: false,
+        error: "Symbols are required",
+      });
     }
 
-    const list = symbols.split(",").map((s) => s.trim()).filter(Boolean);
+    const list = symbols
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     if (!list.length) {
-      return res.status(400).json({ success: false, error: "Empty symbols list" });
+      return res.status(400).json({
+        success: false,
+        error: "Empty symbols list",
+      });
     }
 
-    const results = await Promise.allSettled(
-      list.map((sym) => getOptionQuote(sym))
-    );
+    let quotes = [];
 
-    const quotes = results
-      .filter((r) => r.status === "fulfilled" && r.value?.symbol)
-      .map((r) => r.value);
+    try {
+      // 🚀 Camino rápido (batch REAL)
+      quotes = await getOptionQuotesBatch(list);
 
-    // 🔥 CLAVE: devolver "quotes", no "data"
+      // Seguridad total: si Tradier devuelve vacío → fallback
+      if (!Array.isArray(quotes) || !quotes.length) {
+        throw new Error("Empty batch response");
+      }
+    } catch (batchErr) {
+      // 🛟 Fallback EXACTO al comportamiento original
+      const results = await Promise.allSettled(
+        list.map((sym) => getOptionQuote(sym))
+      );
+
+      quotes = results
+        .filter((r) => r.status === "fulfilled" && r.value?.symbol)
+        .map((r) => r.value);
+    }
+
     res.json({
       success: true,
       quotes,
@@ -75,22 +130,25 @@ router.get("/quotes", async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Tradier /quotes error:", err.message);
-    res.status(500).json({ success: false, error: "Failed to fetch quotes" });
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch quotes",
+    });
   }
 });
 
 /* ============================================================
    GET /api/tradier/expirations
-   ✅ Returns ALL expirations
-   ✅ Stocks, indices, mini indices (XSP)
+   - Incluye ALL roots (XSP, minis, etc.)
 ============================================================ */
 router.get("/expirations", async (req, res) => {
   try {
     const { symbol } = req.query;
     if (!symbol) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Symbol is required" });
+      return res.status(400).json({
+        success: false,
+        error: "Symbol is required",
+      });
     }
 
     const { data } = await axios.get(
@@ -102,20 +160,15 @@ router.get("/expirations", async (req, res) => {
         },
         params: {
           symbol,
-          includeAllRoots: true, // 🔥 REQUIRED
+          includeAllRoots: true,
           strikes: false,
         },
       }
     );
 
     let expirations = data?.expirations?.date || [];
+    if (!Array.isArray(expirations)) expirations = [expirations];
 
-    // Tradier may return string or array
-    if (!Array.isArray(expirations)) {
-      expirations = [expirations];
-    }
-
-    // Sort chronologically
     expirations.sort((a, b) => new Date(a) - new Date(b));
 
     res.json({ success: true, data: expirations });
@@ -210,9 +263,10 @@ router.get("/quote/underlying", async (req, res) => {
   try {
     const { symbol } = req.query;
     if (!symbol) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Symbol is required" });
+      return res.status(400).json({
+        success: false,
+        error: "Symbol is required",
+      });
     }
 
     const { data } = await axios.get(
