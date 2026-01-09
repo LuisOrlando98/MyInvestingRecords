@@ -12,10 +12,11 @@ const api = axios.create({
 /* =========================================================
    TOKEN HELPERS
 ========================================================= */
-const getAccessToken = () => localStorage.getItem("accessToken");
-const getRefreshToken = () => localStorage.getItem("refreshToken");
+const getAccessToken = () => localStorage.getItem("mir_accessToken");
+const getRefreshToken = () => localStorage.getItem("mir_refreshToken");
 const setAccessToken = (token) =>
-  localStorage.setItem("accessToken", token);
+  localStorage.setItem("mir_accessToken", token);
+
 
 /* =========================================================
    REQUEST INTERCEPTOR
@@ -130,15 +131,9 @@ api.interceptors.response.use(
    LOGOUT HARD (centralizado)
 ========================================================= */
 function logoutHard() {
-  localStorage.removeItem("accessToken");
-  localStorage.removeItem("refreshToken");
-  localStorage.removeItem("user");
-
-  // corta socket si existe
-  try {
-    const { socket } = require("../lib/socket");
-    socket?.disconnect();
-  } catch {}
+  localStorage.removeItem("mir_accessToken");
+  localStorage.removeItem("mir_refreshToken");
+  localStorage.removeItem("mir_user");
 
   window.location.href = "/login";
 }

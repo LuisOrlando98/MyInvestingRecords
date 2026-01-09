@@ -34,7 +34,10 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
 
-  // Siempre mantener el ref actualizado
+  // ✅ CACHE ultra-rápido de quotes por OCC (no rompe nada)
+  const quotesCacheRef = useRef({}); // { [occ]: quoteObj }
+
+  // Siempre mantener el ref actualizado (MISMO comportamiento que tú quieres)
   useEffect(() => {
     latestPositionsRef.current = positions;
     setUpdatedPositions(positions); // mantiene tu comportamiento actual
@@ -52,6 +55,7 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
       // ✅ Evita overlap (si tarda, no dispares otra encima)
       if (runningRef.current) return;
       runningRef.current = true;
+      console.time("⏱ useLiveQuotes TOTAL");
 
       try {
         const currentPositions = latestPositionsRef.current || [];
@@ -76,12 +80,15 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
           }))
         );
 
-        // 3) Generar OCC y filtrar válidos
+        // 3) Generar OCC y filtrar válidos (y ya lo guardamos para reusar)
         const legsWithOCC = allLegs
-          .map((leg) => ({
-            ...leg,
-            occSymbol: leg.occSymbol || buildOccSymbol(leg, leg.baseSymbol),
-          }))
+          .map((leg) => {
+            const occ = leg.occSymbol || buildOccSymbol(leg, leg.baseSymbol);
+            return {
+              ...leg,
+              occSymbol: occ,
+            };
+          })
           .filter((l) => l.occSymbol);
 
         if (!legsWithOCC.length) {
@@ -92,21 +99,65 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
         // ✅ DEDUPE: si hay legs repetidos, no pidas quotes duplicados
         const seen = new Set();
         const dedupedLegs = [];
+        const occList = []; // para lookup rápido
         for (const l of legsWithOCC) {
           if (!seen.has(l.occSymbol)) {
             seen.add(l.occSymbol);
             dedupedLegs.push(l);
+            occList.push(l.occSymbol);
           }
         }
 
-        const quotesBySym = (await fetchOptionQuotesByLegs(dedupedLegs)) || {};
+        // ✅ SOLO pedir lo que NO está en cache (mejora enorme)
+        const missingLegs = [];
+        for (const l of dedupedLegs) {
+          if (!quotesCacheRef.current[l.occSymbol]) missingLegs.push(l);
+        }
+
+        let quotesBySym = {};
+        if (missingLegs.length) {
+          quotesBySym = (await fetchOptionQuotesByLegs(missingLegs)) || {};
+
+          // ✅ merge en cache (si Tradier devuelve parcial, no perdemos lo anterior)
+          if (quotesBySym && typeof quotesBySym === "object") {
+            quotesCacheRef.current = {
+              ...quotesCacheRef.current,
+              ...quotesBySym,
+            };
+          }
+        } else {
+          // Nada faltante => usamos el cache completo
+          quotesBySym = quotesCacheRef.current;
+        }
+
+        // ✅ Asegurar fallback al cache si Tradier devolvió vacío
+        if (!quotesBySym || typeof quotesBySym !== "object") {
+          quotesBySym = quotesCacheRef.current || {};
+        }
+
+        // ✅ MAP por posición para no recalcular OCC dentro del map de legs
+        // key: `${posSymbol}__${legIndex}` -> occ
+        // (ultra barato y 100% seguro)
+        const occByPosLegKey = new Map();
+        for (const p of openPositions) {
+          (p.legs || []).forEach((leg, idx) => {
+            const occ = leg.occSymbol || buildOccSymbol(leg, p.symbol);
+            if (occ) occByPosLegKey.set(`${p._id || p.id || p.symbol}__${idx}`, occ);
+          });
+        }
 
         // 4) Actualizar posiciones (sin tocar las cerradas)
         const newPos = currentPositions.map((p) => {
           if (p.status === "Closed") return p;
 
-          const updatedLegs = (p.legs || []).map((leg) => {
-            const occ = leg.occSymbol || buildOccSymbol(leg, p.symbol);
+          const posKeyBase = `${p._id || p.id || p.symbol}__`;
+
+          const updatedLegs = (p.legs || []).map((leg, idx) => {
+            const occ =
+              leg.occSymbol ||
+              occByPosLegKey.get(`${posKeyBase}${idx}`) ||
+              buildOccSymbol(leg, p.symbol);
+
             const q = occ ? quotesBySym[occ] : null;
             if (!q) return leg;
 
@@ -139,6 +190,7 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
               bid: q.bid ?? leg.bid,
               ask: q.ask ?? leg.ask,
               livePrice: q.last ?? leg.livePrice,
+
               change: q.change ?? leg.change,
               prevClose: q.prevclose ?? q.prevClose ?? leg.prevClose,
               greeks: {
@@ -149,9 +201,7 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
                 rho: greeks?.rho ?? leg.greeks?.rho,
               },
               impliedVolatility:
-                typeof impliedVolRaw === "number"
-                  ? impliedVolRaw
-                  : leg.impliedVolatility,
+                typeof impliedVolRaw === "number" ? impliedVolRaw : leg.impliedVolatility,
             };
           });
 
@@ -168,6 +218,7 @@ export function useLiveQuotes(positions = [], refreshMs = 15000) {
       } catch (err) {
         console.error("❌ Error actualizando quotes:", err);
       } finally {
+        console.timeEnd("⏱ useLiveQuotes TOTAL");
         runningRef.current = false;
       }
     }

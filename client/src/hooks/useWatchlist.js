@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import api from "../services/api";
-import { socket } from "../lib/socket";
+import { useQuotes } from "../store/QuoteStore";
 
 /* =========================================================
    CONSTANTES
@@ -18,20 +18,6 @@ const preloadLogo = (url) => {
   img.src = url;
 };
 
-/* =========================================================
-   PAGE VISIBILITY
-========================================================= */
-const usePageVisible = () => {
-  const [visible, setVisible] = useState(!document.hidden);
-
-  useEffect(() => {
-    const handler = () => setVisible(!document.hidden);
-    document.addEventListener("visibilitychange", handler);
-    return () => document.removeEventListener("visibilitychange", handler);
-  }, []);
-
-  return visible;
-};
 
 /* =========================================================
    SAFE API (retry 429)
@@ -65,8 +51,8 @@ export default function useWatchlist() {
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
 
-  const visible = usePageVisible();
-  const poller = useRef(null);
+  const { quotes: liveQuotes, subscribe, unsubscribe } = useQuotes();
+
 
   /* =========================================================
      LOAD WATCHLIST (ORDER SAFE)
@@ -146,55 +132,17 @@ export default function useWatchlist() {
   }, [meta]);
 
   /* =========================================================
-     SOCKET LIVE PRICES
+  QUOTESTORE SUBSCRIBE
   ========================================================= */
   useEffect(() => {
     if (!symbols.length) return;
 
-    socket.emit("subscribe", { symbols });
-
-    const onPrice = (d) => {
-      if (!d?.symbol) return;
-
-      setQuotes((prev) => ({
-        ...prev,
-        [d.symbol]: {
-          ...prev[d.symbol],
-          price: d.price,
-          changePercent: d.changePercent,
-          changeAmount: d.changeAmount,
-        },
-      }));
-    };
-
-    socket.on("priceUpdate", onPrice);
+    subscribe(symbols);
 
     return () => {
-      socket.off("priceUpdate", onPrice);
-      socket.emit("unsubscribe", { symbols });
+      unsubscribe(symbols);
     };
-  }, [symbols]);
-
-  /* =========================================================
-     LIGHT POLLING (VISIBILITY AWARE)
-  ========================================================= */
-  useEffect(() => {
-    if (poller.current) {
-      clearInterval(poller.current);
-      poller.current = null;
-    }
-
-    if (!visible || !symbols.length) return;
-
-    poller.current = setInterval(() => {
-      loadQuotesFast();
-    }, 20000);
-
-    return () => {
-      if (poller.current) clearInterval(poller.current);
-      poller.current = null;
-    };
-  }, [visible, symbols, loadQuotesFast]);
+  }, [symbols, subscribe, unsubscribe]);
 
   /* =========================================================
      ADD SYMBOL
@@ -253,9 +201,25 @@ export default function useWatchlist() {
     });
   };
 
+  /* =========================================================
+   MERGE LOCAL QUOTES + LIVE QUOTES (QuoteStore)
+  ========================================================= */
+  const mergedQuotes = useMemo(() => {
+    const next = { ...quotes };
+
+    for (const sym of Object.keys(liveQuotes || {})) {
+      next[sym] = {
+        ...next[sym],
+        ...liveQuotes[sym],
+      };
+    }
+
+    return next;
+  }, [quotes, liveQuotes]);
+
   return {
     symbols,
-    quotes,
+    quotes: mergedQuotes,
     meta,
     loading,
     addSymbol,

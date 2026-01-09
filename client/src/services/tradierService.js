@@ -100,11 +100,15 @@ export async function fetchOptionQuotesByLegs(legs = [], options = {}) {
         last: q.last ?? null,
         bid: q.bid ?? null,
         ask: q.ask ?? null,
-        prevClose: q.previous_close ?? null,
+        prevClose: q.prevclose ?? q.previous_close ?? q.prev_close ?? null,
         change: q.change ?? null,
-        delta: q.greeks?.delta ?? null,
-        theta: q.greeks?.theta ?? null,
-        impliedVol: extractImpliedVolPct(q),
+
+        greeks: {
+          delta: q.greeks?.delta ?? null,
+          theta: q.greeks?.theta ?? null,
+        },
+
+        impliedVolatility: extractImpliedVolPct(q),
       };
     });
 

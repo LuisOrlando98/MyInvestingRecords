@@ -1,3 +1,8 @@
+// =======================================================
+// POSITION UTILS — BROKER-ACCURATE (WEBULL STYLE)
+// (Fix: leg Market Value sign for Buy/Sell)
+// =======================================================
+
 // ---------- Helpers ----------
 export const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
@@ -37,12 +42,8 @@ export function legPrevCloseMid(leg) {
   const chg = num(leg.change, NaN);
   if (Number.isFinite(last) && Number.isFinite(chg)) return last - chg;
 
-  return num(leg.premium, 0);
-}
-
-// Acción → signo: buy = pagas (positivo), sell = recibes (negativo)
-function legSign(leg) {
-  return (leg.action || "").toLowerCase().includes("sell") ? -1 : +1;
+  // si no hay datos reales, no inventar
+  return legMid(leg);
 }
 
 // ---------- Métricas por posición ----------
@@ -51,91 +52,104 @@ export function calculatePositionMetrics(pos) {
   if (!legs.length) return {};
 
   // =======================================================
-  // 🔥 POSICIÓN CERRADA → usar valores fijos (no live quotes)
+  // 🔒 POSICIÓN CERRADA
   // =======================================================
   if (pos.status === "Closed") {
-    const qty = Math.max(...(legs.map(l => num(l.quantity,1))), 1);
-    const exit = num(pos.exitPrice, 0);
+    const qty = Math.max(...legs.map((l) => num(l.quantity, 1)), 1);
     const realized = num(pos.realizedPnL, 0);
-    const totalCost = num(pos.totalCost, 0);
-
-    const marketValue = exit * MULT * qty;
-    const openPnLPct =
-      Math.abs(totalCost) > 0 ? (realized / Math.abs(totalCost)) * 100 : 0;
+    const maxLoss = num(pos.maxLoss, 0);
 
     return {
       qty,
-      entry: pos.entryPrice ?? (totalCost / MULT),
-      last: exit,                           // <-- clave
-      totalCost,
-      marketValue,
+      entry: pos.entryPrice ?? null,
+      last: pos.exitPrice ?? null,
+      totalCost: num(pos.totalCost, 0),
+      marketValue: 0,
       openPnL: realized,
-      openPnLPct,
+      openPnLPct: maxLoss > 0 ? (realized / maxLoss) * 100 : null,
       daysPnL: 0,
       breakEven: pos.breakEvenLow ?? null,
       maxProfit: pos.maxProfit ?? null,
-      maxLoss: pos.maxLoss ?? null,
-      revenue: openPnLPct,
+      maxLoss: maxLoss || null,
+      revenue: null, // ❗ NO aplica en cerradas
       strategyDetected: pos.strategy || "Closed",
     };
   }
 
-
-  let entryCash = 0;
-  let currValue = 0;
-  let daysPnL = 0;
+  // =======================================================
+  // 🔴 POSICIÓN ABIERTA — DEFINICIÓN REAL DE BROKER
+  // =======================================================
+  let entryCash = 0; // credit +, debit -
+  let marketValue = 0;
+  let prevMarketValue = 0;
   const qties = [];
 
   legs.forEach((leg) => {
     const q = num(leg.quantity, 1);
-    const s = legSign(leg);
+    const isSell = (leg.action || "").toLowerCase().includes("sell");
+    const mvSign = isSell ? -1 : 1;
+
     const mid = legMid(leg);
     const prev = legPrevCloseMid(leg);
 
     qties.push(q);
 
-    const entry = s * num(leg.premium) * MULT * q;
-    const marketVal = s * mid * MULT * q;
-    const dayMove = s * (mid - prev) * MULT * q;
+    // dY"` ENTRY CASH
+    // Sell = credit (+), Buy = debit (-)
+    entryCash += (isSell ? 1 : -1) * num(leg.premium) * MULT * q;
 
-    entryCash += entry;
-    currValue += marketVal;
-    daysPnL += dayMove;
+    // dY"` MARKET VALUE (signed by leg action)
+    marketValue += mvSign * mid * MULT * q;
+    prevMarketValue += mvSign * prev * MULT * q;
   });
 
   const qty = Math.max(...qties, 1);
 
-  const totalCost = entryCash; // positivo si compras (inviertes), negativo si vendes (ingreso)
-  const openPnL = currValue - totalCost;
-  const openPnLPct = Math.abs(totalCost) > 0 ? (openPnL / Math.abs(totalCost)) * 100 : 0;
-  const last = Math.abs(currValue) / MULT;
+  // dY"� WEBULL DEFINITIONS
+  const openPnL = entryCash + marketValue;
 
-  // === Estrategias ===
+  const openPnLPct =
+    Math.abs(entryCash) > 0
+      ? (openPnL / Math.abs(entryCash)) * 100
+      : 0;
+
+  const daysPnL = marketValue - prevMarketValue;
+
+  // Precio promedio actual
+  const last = Math.abs(marketValue) / (MULT * qty);
+
+  // Total Cost mostrado = -entry cash
+  const totalCost = -entryCash;
+
+  // =======================================================
+  // 📐 Estrategias
+  // =======================================================
   let breakEven = null;
   let maxProfit = null;
   let maxLoss = null;
-  let revenue = null;
+  let revenue = Math.abs(entryCash) > 0 ? (openPnL / Math.abs(entryCash)) * 100 : null;
   let strategyDetected = pos.strategy || "Single";
 
   if (legs.length === 2) {
     const [a, b] = legs;
+
     const isPut =
       a.optionType?.toLowerCase() === "put" ||
       b.optionType?.toLowerCase() === "put";
+
     const isCall =
       a.optionType?.toLowerCase() === "call" ||
       b.optionType?.toLowerCase() === "call";
+
     const width = Math.abs(num(a.strike) - num(b.strike));
     const net = entryCash / MULT;
-
-    if (isPut && net < 0) strategyDetected = "Put Credit Spread";
-    else if (isPut && net > 0) strategyDetected = "Put Debit Spread";
-    else if (isCall && net < 0) strategyDetected = "Call Credit Spread";
-    else if (isCall && net > 0) strategyDetected = "Call Debit Spread";
-    else strategyDetected = "Vertical Spread";
-
     const netAbs = Math.abs(net);
-    const isCredit = net < 0;
+    const isCredit = net > 0; // 👈 CLAVE
+
+    if (isPut && isCredit) strategyDetected = "Put Credit Spread";
+    else if (isPut) strategyDetected = "Put Debit Spread";
+    else if (isCall && isCredit) strategyDetected = "Call Credit Spread";
+    else if (isCall) strategyDetected = "Call Debit Spread";
 
     if (isCredit) {
       maxProfit = netAbs * MULT;
@@ -146,10 +160,9 @@ export function calculatePositionMetrics(pos) {
     }
 
     breakEven = isPut
-      ? Math.min(num(a.strike), num(b.strike)) + (isCredit ? -netAbs : netAbs)
-      : Math.max(num(a.strike), num(b.strike)) - (isCredit ? -netAbs : netAbs);
+      ? Math.min(num(a.strike), num(b.strike)) - (isCredit ? netAbs : -netAbs)
+      : Math.max(num(a.strike), num(b.strike)) + (isCredit ? netAbs : -netAbs);
 
-    revenue = maxProfit > 0 ? (openPnL / maxProfit) * 100 : 0;
   }
 
   if (legs.length === 4) {
@@ -160,10 +173,10 @@ export function calculatePositionMetrics(pos) {
 
   return {
     qty,
-    entry: entryCash / MULT,
+    entry: totalCost / (MULT * qty),
     last,
     totalCost,
-    marketValue: currValue,
+    marketValue,
     openPnL,
     openPnLPct,
     daysPnL,
@@ -176,28 +189,44 @@ export function calculatePositionMetrics(pos) {
 }
 
 // ---------- Métricas por leg ----------
+// ✅ FIX PRINCIPAL:
+// - Sell to Open => Market Value NEGATIVO
+// - Buy to Open  => Market Value POSITIVO
 export function calculateLegMetrics(leg) {
   const q = num(leg.quantity, 1);
-  const s = legSign(leg);
+  const sell = (leg.action || "").toLowerCase().includes("sell");
+
   const premium = num(leg.premium);
   const mid = legMid(leg);
   const prev = legPrevCloseMid(leg);
 
-  const totalCost = s * premium * MULT * q; // positivo si compras, negativo si vendes
-  const marketValue = s * mid * MULT * q;
-  const openPnL = marketValue - totalCost;
-  const openPnLPct = Math.abs(totalCost) > 0 ? (openPnL / Math.abs(totalCost)) * 100 : 0;
-  const daysPnL = s * (mid - prev) * MULT * q;
-  const last = mid;
+  // Entry cash (credit + / debit -)
+  const entryCash = (sell ? +1 : -1) * premium * MULT * q;
+  const entryDisplay = (sell ? -1 : +1) * premium;
+
+  // ✅ Webull visual MV by leg:
+  // Sell = negative MV, Buy = positive MV
+  const marketValue = (sell ? -1 : +1) * mid * MULT * q;
+  const prevMarketValue = (sell ? -1 : +1) * prev * MULT * q;
+
+  // PnL consistent with these signs
+  const pnl = entryCash + marketValue;
+
+  const pnlPct =
+    Math.abs(entryCash) > 0 ? (pnl / Math.abs(entryCash)) * 100 : 0;
+
+  // Day’s P&L consistent with same MV sign
+  const daysPnL = marketValue - prevMarketValue;
 
   return {
     qty: q,
-    entry: premium,
-    last,
-    totalCost,
+    entry: entryDisplay,
+    last: mid,
+    totalCost: -entryCash,
     marketValue,
-    pnl: openPnL,
-    pnlPct: openPnLPct,
+    pnl,
+    pnlPct,
     daysPnL,
   };
 }
+

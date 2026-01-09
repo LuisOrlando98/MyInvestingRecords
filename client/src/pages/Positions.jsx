@@ -2,11 +2,11 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { XCircle, MoreVertical } from "lucide-react";
 import api from "../services/api";
-import { io } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
-
+import { useRef } from "react";
 import { buildOptionarUrlFromPosition } from "../utils/optionarLink";
 import { Eye } from "lucide-react"; // icono profesional
+import { useQuotes } from "../store/QuoteStore";
 
 // 🧮 Utils centralizados
 import {
@@ -16,9 +16,9 @@ import {
   fmtPct as pct,
   earliestExp,
 } from "../utils/positionUtils";
+import { mergeLiveQuotesIntoPosition } from "../utils/mergeLiveQuotes";
 
 // ⚡ Hook de cotizaciones Tradier
-import { useLiveQuotes } from "../hooks/useLiveQuotes";
 
 // 🏦 Íconos por broker
 import { brokerIcons } from "../utils/brokerIcons";
@@ -41,6 +41,8 @@ function Positions() {
   const [loading, setLoading] = useState(true);
   const [openMenuId, setOpenMenuId] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+   // 📡 Quotes globales (stocks + options)
+  const { optionQuotes, trackOptionLegs } = useQuotes();
 
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [showRollModal, setShowRollModal] = useState(false);
@@ -49,7 +51,6 @@ function Positions() {
   // ===== FILTERS (like Performance) =====
   const [symbolFilter, setSymbolFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
-
 
   // === 1️⃣ Cargar posiciones desde el backend ===
   const fetchPositions = async (includeArchived = false) => {
@@ -65,32 +66,16 @@ function Positions() {
       setLoading(false);
     }
   };
-
-  // === 2️⃣ WebSocket local (SAFE) ===
+  
+  // 🎯 Trackear legs de opciones en el QuoteStore (UNA SOLA VEZ por cambio)
   useEffect(() => {
-    fetchPositions();
+    if (!positions.length) return;
 
-    const socket = io(
-      `${window.location.protocol}//${window.location.hostname}:4000`,
-      {
-        path: "/ws",
-        transports: ["websocket"],
-      }
+    trackOptionLegs(
+      positions.filter((p) => p.status === "Open")
     );
-
-    socket.on("priceUpdate", (data) => {
-      setPositions((prev) =>
-        prev.map((p) =>
-          p.symbol === data.symbol ? { ...p, livePrice: data.price } : p
-        )
-      );
-    });
-
-    return () => {
-      socket.off("priceUpdate");
-      socket.disconnect(); // 🔥 CLAVE
-    };
-  }, []);
+  }, [positions, trackOptionLegs]);
+  
 
   useEffect(() => {
     fetchPositions(showArchived);
@@ -101,27 +86,31 @@ function Positions() {
     window.addEventListener("click", closeMenu);
     return () => window.removeEventListener("click", closeMenu);
   }, []);
+  
+  const livePositionsMap = useMemo(() => {
+    const map = new Map();
 
-  // === 3️⃣ Hook Tradier Live (actualiza precios reales de opciones) ===
-  const livePositions = useLiveQuotes(positions, 5000); // 5s refresh
+    positions.forEach((pos) => {
+      if (pos.status !== "Open") {
+        map.set(pos._id, pos);
+        return;
+      }
 
-  // 🔁 Forzar re-render para que los valores calculados (como Greeks) se actualicen visualmente
-  const [forceRefresh, setForceRefresh] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setForceRefresh((prev) => prev + 1);
-    }, 5000); // ⏱ cada 5 segundos
-    return () => clearInterval(interval);
-  }, []);
+      const merged = mergeLiveQuotesIntoPosition(pos, optionQuotes);
+      map.set(pos._id, merged);
+    });
+
+    return map;
+  }, [positions, optionQuotes]);
 
   // === 4️⃣ Ordenar posiciones por expiración ===
   const sortedPositions = useMemo(() => {
-    return [...livePositions].sort(
+    return [...positions].sort(
       (a, b) =>
         new Date(a.legs?.[0]?.expiration || 0) -
         new Date(b.legs?.[0]?.expiration || 0)
     );
-  }, [livePositions, forceRefresh]);
+  }, [positions]);
 
   // ✅ OJO: ESTE useMemo DEBE IR ANTES DEL "return loading" (Rules of Hooks)
   // 💰 Total Open P&L en vivo
@@ -129,7 +118,9 @@ function Positions() {
     return sortedPositions
       .filter((p) => p.status === "Open")
       .reduce((sum, p) => {
-        const m = calculatePositionMetrics(p);
+        const m = livePositionsMap.get(p._id)
+          ? calculatePositionMetrics(livePositionsMap.get(p._id))
+          : calculatePositionMetrics(p);
         return sum + (m.openPnL || 0);
       }, 0);
   }, [sortedPositions]);
@@ -142,7 +133,9 @@ function Positions() {
 
     sortedPositions.forEach((p) => {
       if (p.status !== "Open") return;
-      const m = calculatePositionMetrics(p);
+      const m = livePositionsMap.get(p._id)
+        ? calculatePositionMetrics(livePositionsMap.get(p._id))
+        : calculatePositionMetrics(p);
       openPnL += m.openPnL || 0;
       marketValue += m.marketValue || 0;
       openCount++;
@@ -174,6 +167,10 @@ function Positions() {
     });
   }, [sortedPositions, symbolFilter, statusFilter]);
 
+  // ======================================================
+  //      PRECALCULAR POSICIONES CON QUOTES LIVE
+  // ======================================================
+  
   if (loading)
     return (
       <p className="text-center mt-8 text-gray-500">Loading positions...</p>
@@ -194,7 +191,7 @@ function Positions() {
       alert("Error deleting position");
     }
   };
-
+  
   // === 5️⃣ Render ===
   return (
     <div className="p-6 bg-white min-h-screen">
@@ -326,27 +323,15 @@ function Positions() {
           </thead>
 
           <tbody className="divide-y">
-            {filteredPositions.map((pos) => {
-              const m =
-                pos.status === "Open"
-                  ? calculatePositionMetrics(pos)
-                  : {
-                      marketValue: 0,
-                      openPnL: pos.realizedPnL ?? 0,
-                      openPnLPct: pos.realizedReturnPct ?? 0,
-                      daysPnL: 0,
-                      last: pos.exitPrice ?? null,
-                      entry: pos.entryPrice ?? null,
-                      totalCost: pos.totalCost ?? 0,
-                      breakEven: null,
-                      maxProfit: null,
-                      maxLoss: null,
-                      revenue: pos.realizedReturnPct ?? null,
-                    };
-              const exp = earliestExp(pos.legs);
+            {filteredPositions.map((pos) => {           
+            const posWithLiveLegs = livePositionsMap.get(pos._id) || pos;
+            const m = pos.status === "Open"
+              ? calculatePositionMetrics(posWithLiveLegs)
+              : {};
+              const exp = earliestExp(posWithLiveLegs.legs);
               const brokerName = (pos.broker || "").trim();
               const isRolledIn = pos.status === "Open" && pos.rolledFrom;
-
+              
               return (
                 <React.Fragment key={pos._id}>
                   {/* === MAIN ROW (Double-Click to Edit) === */}
@@ -666,13 +651,34 @@ function Positions() {
                       {m.maxLoss ? fmt(m.maxLoss) : "—"}
                     </td>
                     <td className="px-3 py-2">
-                      {m.revenue ? pct(m.revenue) : "—"}
+                      {pos.status === "Open" && m.revenue != null ? (
+                        <span
+                          className={m.revenue >= 0 ? "text-green-600" : "text-red-600"}
+                        >
+                          {pct(m.revenue)}
+                        </span>
+                      ) : pos.status === "Closed" &&
+                        m.maxLoss &&
+                        pos.realizedPnL != null ? (
+                        <span
+                          className={
+                            pos.realizedPnL >= 0 ? "text-green-600" : "text-red-600"
+                          }
+                        >
+                          {pct((pos.realizedPnL / m.maxLoss) * 100)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
                     </td>
                   </tr>
 
                   {/* === LEGS === */}
-                  {pos.legs?.map((leg, i) => {
-                    const lm = calculateLegMetrics(leg);
+                  {posWithLiveLegs.legs?.map((leg, i) => {
+                    
+                    const liveLeg = posWithLiveLegs.legs?.[i] || leg;
+
+                    const lm = calculateLegMetrics(liveLeg);
                     return (
                       <tr
                         key={i}
@@ -732,8 +738,14 @@ function Positions() {
                         const calcGreek = (key, decimals = 5) => {
                           let total = 0;
 
-                          (pos.legs || []).forEach((leg) => {
-                            const greeks = leg.greeks || {};
+                          (posWithLiveLegs.legs || []).forEach((leg) => {
+                            const occ = leg.occSymbol;
+
+                            const greeks = {
+                              delta: leg.greeks?.delta,
+                              theta: leg.greeks?.theta,
+                            };
+                            
                             const val = parseFloat(greeks[key]);
                             const qty = parseFloat(leg.quantity ?? 1);
                             if (isNaN(val)) return;
@@ -776,7 +788,7 @@ function Positions() {
                           if (totalQty === 0) return "—";
                           return (totalIV / totalQty).toFixed(2) + "%";
                         };
-
+                        
                         return (
                           <div className="flex gap-6 text-sm text-gray-600 italic px-3 py-1">
                             <span>Delta: {calcGreek("delta")}</span>
@@ -784,13 +796,15 @@ function Positions() {
                             <span>Impl. Vol.: {avgIV()}</span>
                           </div>
                         );
+                        
                       })()}
                     </td>
                   </tr>
                 </React.Fragment>
               );
-            })}
+            })}            
           </tbody>
+          
         </table>
       </div>
     </div>    

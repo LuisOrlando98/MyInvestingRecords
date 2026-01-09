@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  AreaChart,
   LineChart,
   Line,
   CartesianGrid,
@@ -11,25 +12,18 @@ import {
   Area,
 } from "recharts";
 import api from "../services/api";
-import { io } from "socket.io-client";
 
 import StockDetail from "../components/StockDetail";
 import Watchlist from "../components/watchlist/Watchlist";
-
-/* =========================================================
-   SOCKET (MISMA IDEA QUE TENÍAS — NO CAMBIA API BACKEND)
-========================================================= */
-const socket = io(
-  `${window.location.protocol}//${window.location.hostname}:4000`,
-  {
-    path: "/ws",
-    transports: ["websocket"],
-  }
-);
+import useWatchlist from "../hooks/useWatchlist";
+import { calculatePositionMetrics } from "../utils/positionUtils";
+import { mergeLiveQuotesIntoPosition } from "../utils/mergeLiveQuotes";
+import { useQuotes } from "../store/QuoteStore";
 
 /* =========================================================
    HELPERS
 ========================================================= */
+
 const moneyNum = (v) => Number(v ?? 0);
 const pctNum = (v) => Number(v ?? 0);
 
@@ -54,21 +48,68 @@ const fmtPct = (n) => {
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 };
 
-const timeHHMMSS = (ts) => {
-  if (!ts) return "—";
-  try {
-    return new Date(ts).toLocaleTimeString();
-  } catch {
-    return "—";
-  }
+
+/* =========================================================
+   DATE HELPERS (NO UTC BUG)
+========================================================= */
+
+const dateKeyLocal = (d) => {
+  const x = new Date(d);
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, "0");
+  const day = String(x.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 };
 
-const abbreviatePosition = (pos) => {
-  if (!pos?.legs || pos.legs.length === 0) return pos?.strategy || "—";
-  const type = pos.legs[0]?.optionType === "call" ? "C" : "P";
-  const strikes = pos.legs.map((l) => l.strike).join("/");
-  const count = pos.count ?? pos.legs.length;
-  return `${type} ${strikes} • ${count}c`;
+const RANGE_PRESETS = [
+  { key: "TODAY", label: "Today" },
+  { key: "7D", label: "Last 7D" },
+  { key: "1M", label: "Last Month" },
+  { key: "3M", label: "Last 3 Months" },
+  { key: "YTD", label: "This Year" },
+  { key: "1Y", label: "Last Year" },
+];
+
+const resolveRange = (preset) => {
+  const now = new Date();
+  const today = dateKeyLocal(now);
+
+  if (preset === "TODAY") {
+    return { from: today, to: today };
+  }
+
+  if (preset === "7D") {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return { from: dateKeyLocal(d), to: today };
+  }
+
+  if (preset === "1M") {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return { from: dateKeyLocal(d), to: today };
+  }
+
+  if (preset === "3M") {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 3);
+    return { from: dateKeyLocal(d), to: today };
+  }
+
+  if (preset === "YTD") {
+    return {
+      from: `${now.getFullYear()}-01-01`,
+      to: today,
+    };
+  }
+
+  if (preset === "1Y") {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 1);
+    return { from: dateKeyLocal(d), to: today };
+  }
+
+  return {};
 };
 
 /* =========================================================
@@ -99,15 +140,55 @@ function ProfitTooltip({ active, payload, label }) {
   );
 }
 
+const RANGE_META = {
+  TODAY: {
+    title: "Today",
+    subtitle: "Closed trades revenue (today)",
+  },
+  "7D": {
+    title: "Last 7 Days",
+    subtitle: "Daily revenue from closed trades",
+  },
+  "1M": {
+    title: "Last Month",
+    subtitle: "Daily revenue from closed trades",
+  },
+  "3M": {
+    title: "Last 3 Months",
+    subtitle: "Daily revenue from closed trades",
+  },
+  YTD: {
+    title: "Year to Date",
+    subtitle: "Daily revenue from closed trades",
+  },
+  "1Y": {
+    title: "Last Year",
+    subtitle: "Daily revenue from closed trades",
+  },
+};
+
+const rangeTitleMap = {
+  TODAY: "Today Performance",
+  "7D": "Last 7 Days Performance",
+  "1M": "Last Month Performance",
+  "3M": "Last 3 Months Performance",
+  YTD: "Year to Date Performance",
+  "1Y": "Last Year Performance",
+};
+
 /* =========================================================
    MAIN
 ========================================================= */
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [monthlySummary, setMonthlySummary] = useState([]);
+  // Chart filters
+  const [range, setRange] = useState("1M"); // Last Month por defecto
+  const [dailyPnL, setDailyPnL] = useState([]);
   const [openPositions, setOpenPositions] = useState([]);
   const [selectedTicker, setSelectedTicker] = useState(null);
-
+  const { quotes } = useWatchlist();
+  const { optionQuotes, trackOptionLegs } = useQuotes();
   const [alert, setAlert] = useState(null);
 
   /* =========================================================
@@ -121,14 +202,20 @@ export default function Dashboard() {
         const [rStats, rMonth, rOpen] = await Promise.all([
           api.get("/api/positions/stats"),
           api.get("/api/positions/summary-by-month"),
-          api.get("/api/positions/open-summary"),
+          api.get("/api/positions", {
+            params: { status: "Open" }
+          }),
         ]);
 
-        if (!alive) return;
+        console.log("OPEN SUMMARY RAW:", rOpen.data); // 👈 ADD THIS
+
+        if (!alive) return;      
 
         setStats(rStats.data.stats || rStats.data.data || {});
         setMonthlySummary(rMonth.data.data || rMonth.data.monthlySummary || []);
-        setOpenPositions(rOpen.data.data || rOpen.data.openPositions || []);
+        setOpenPositions(
+          (rOpen.data.data || []).filter(p => p.status === "Open")
+        );
       } catch (e) {
         console.error("Dashboard load error:", e);
         if (!alive) return;
@@ -140,43 +227,69 @@ export default function Dashboard() {
       }
     })();
 
-    const onPrice = (data) => {
-      if (!data?.symbol) return;
-
-      // UI alert sutil si hay movimiento fuerte
-      if (Math.abs(Number(data.changePercent || 0)) >= 5) {
-        setAlert({
-          type: "move",
-          msg: `${data.symbol} moved ${fmtPct(Number(data.changePercent || 0))} • $${Number(data.price || 0).toFixed(2)}`,
-        });
-        setTimeout(() => setAlert(null), 3200);
-      }
-
-      setOpenPositions((prev) =>
-        prev.map((pos) =>
-          pos.symbol === data.symbol
-            ? {
-                ...pos,
-                livePrice: data.price,
-                changePercent: data.changePercent,
-                updatedAt: data.timestamp,
-              }
-            : pos
-        )
-      );
-    };
-
-    socket.on("priceUpdate", onPrice);
-
     return () => {
       alive = false;
-      socket.off("priceUpdate", onPrice);
     };
   }, []);
 
+  useEffect(() => {
+    if (!openPositions.length) return;
+    trackOptionLegs(openPositions);
+  }, [openPositions, trackOptionLegs]);
+
   /* =========================================================
-     DERIVED (SIEMPRE ARRIBA, NO DESPUÉS DE RETURNS)
+    LOAD DAILY PnL FOR DASHBOARD CHART
   ========================================================= */
+  useEffect(() => {
+    const loadDailyPnL = async () => {
+      try {
+        const { from, to } = resolveRange(range);
+
+        const res = await api.get("/api/performance", {
+          params: {
+            from: from ? `${from}T00:00:00.000` : undefined,
+            to: to ? `${to}T23:59:59.999` : undefined,
+          },
+        });
+
+        const rows = Array.isArray(res.data?.rows) ? res.data.rows : [];
+
+        const map = {};
+        for (const r of rows) {
+          const key =
+            r.dateKey ||
+            (r.date ? dateKeyLocal(r.date) : null);
+
+          if (!key) continue;
+
+          map[key] = (map[key] || 0) + Number(r.revenue || 0);
+        }
+
+        const chart = Object.entries(map)
+          .map(([date, pnl]) => ({ date, pnl }))
+          .sort((a, b) => a.date.localeCompare(b.date));
+
+        setDailyPnL(chart);
+      } catch (err) {
+        console.error("Dashboard daily PnL error:", err);
+        setDailyPnL([]);
+      }
+    };
+
+    loadDailyPnL();
+  }, [range]);
+
+  /* =========================================================
+     DERIVED 
+  ========================================================= */
+  const pnlStats = useMemo(() => {
+    const total = dailyPnL.reduce((s, d) => s + d.pnl, 0);
+    return {
+      total,
+      positive: total >= 0,
+    };
+  }, [dailyPnL]);
+
   const netProfitValue = useMemo(() => moneyNum(stats?.netProfit ?? 0), [stats]);
 
   const headerAccent =
@@ -218,16 +331,19 @@ export default function Dashboard() {
     return [min - pad, max + pad];
   }, [chartData]);
 
-  const openPositionsSorted = useMemo(() => {
+  const openPositionsWithMetrics = useMemo(() => {
     const arr = Array.isArray(openPositions) ? openPositions : [];
-    // ordena por abs(changePercent) desc (más movimiento arriba)
-    return [...arr].sort((a, b) => {
-      const av = Math.abs(pctNum(a?.changePercent ?? 0));
-      const bv = Math.abs(pctNum(b?.changePercent ?? 0));
-      return bv - av;
-    });
-  }, [openPositions]);
 
+    return arr.map((pos) => {
+      const merged = mergeLiveQuotesIntoPosition(pos, optionQuotes);
+      return {
+        pos: merged,
+        metrics: calculatePositionMetrics(merged),
+      };
+    });
+  }, [openPositions, optionQuotes]);
+
+  
   /* =========================================================
      LOADING
   ========================================================= */
@@ -299,115 +415,147 @@ export default function Dashboard() {
 
           {/* MAIN GRID: CHART + TABLE */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            {/* CHART (PRO) */}
+            {/* PERFORMANCE CHART */}
             <div className="bg-white rounded-2xl border shadow-sm p-5">
-              <div className="flex items-end justify-between">
+              {/* HEADER */}
+              <div className="flex items-center justify-between mb-3">
                 <div>
                   <h2 className="text-sm font-semibold text-gray-800">
-                    Performance (Monthly)
+                    Performance ({RANGE_META[range]?.title})
                   </h2>
                   <p className="text-xs text-gray-500">
-                    Net profit and cumulative trend (last 12 months)
+                    {RANGE_META[range]?.subtitle}
                   </p>
                 </div>
 
-                <div className="text-xs text-gray-400">
-                  {chartData.length ? `${chartData.length} points` : "No data"}
-                </div>
+                {/* RANGE DROPDOWN */}
+                <select
+                  value={range}
+                  onChange={(e) => setRange(e.target.value)}
+                  className="
+                    h-9 px-3 pr-8 rounded-lg border bg-white
+                    text-xs font-semibold text-gray-700
+                    hover:bg-gray-50
+                    focus:outline-none focus:ring-2 focus:ring-gray-900/10
+                  "
+                >
+                  {RANGE_PRESETS.map((r) => (
+                    <option key={r.key} value={r.key}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="mt-3">
-                <ResponsiveContainer width="100%" height={320}>
-                  <LineChart data={chartData}>
-                    <defs>
-                      <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#2563eb" stopOpacity={0.18} />
-                        <stop offset="100%" stopColor="#2563eb" stopOpacity={0.03} />
-                      </linearGradient>
-                    </defs>
-
-                    <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" />
-
-                    <XAxis
-                      dataKey="month"
-                      fontSize={11}
-                      tickMargin={8}
-                    />
-
-                    <YAxis
-                      fontSize={11}
-                      domain={chartDomain}
-                      tickMargin={8}
-                    />
-
-                    <Tooltip content={<ProfitTooltip />} />
-
-                    <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="4 4" />
-
-                    {/* Soft area under cumulative for “pro” look */}
-                    <Area
-                      type="monotone"
-                      dataKey="cumulativeProfit"
-                      stroke="transparent"
-                      fill="url(#areaFill)"
-                      isAnimationActive={false}
-                    />
-
-                    {/* Monthly Net */}
-                    <Line
-                      type="monotone"
-                      dataKey="netProfit"
-                      stroke="#2563eb"
-                      strokeWidth={2.4}
-                      dot={{ r: 3 }}
-                      activeDot={{ r: 6 }}
-                      isAnimationActive={false}
-                    />
-
-                    {/* Cumulative */}
-                    <Line
-                      type="monotone"
-                      dataKey="cumulativeProfit"
-                      stroke="#10b981"
-                      strokeWidth={2.4}
-                      dot={false}
-                      isAnimationActive={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-
-                {/* Legend minimal */}
-                <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block w-3 h-[2px] bg-blue-600" />
-                    Monthly net
+              {/* BODY */}
+              <div className="relative">
+                {/* NO DATA */}
+                {dailyPnL.length === 0 && (
+                  <div className="h-[340px] flex flex-col items-center justify-center text-sm text-gray-400">
+                    <div className="font-semibold">No closed trades</div>
+                    <div className="text-xs mt-1">
+                      Try selecting a different time range
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block w-3 h-[2px] bg-emerald-500" />
-                    Cumulative
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block w-3 h-[2px] bg-gray-400" />
-                    Zero line
-                  </div>
-                </div>
+                )}
+                
+                {/* CHART */}
+                {dailyPnL.length > 0 && (
+                  <>
+                    <ResponsiveContainer width="100%" height={340}>
+                      <AreaChart
+                        data={dailyPnL}
+                        margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient id="pnlGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop
+                              offset="0%"
+                              stopColor={pnlStats.positive ? "#16a34a" : "#dc2626"}
+                              stopOpacity={0.45}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor={pnlStats.positive ? "#16a34a" : "#dc2626"}
+                              stopOpacity={0.05}
+                            />
+                          </linearGradient>
+                        </defs>
+
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 11 }}
+                          tickMargin={6}
+                          tickFormatter={(v) =>
+                            range === "TODAY" ? v.slice(11, 16) : v.slice(5)
+                          }
+                        />
+
+                        <YAxis
+                          tick={{ fontSize: 11 }}
+                          tickFormatter={(v) => `$${v}`}
+                        />
+
+                        <Tooltip
+                          contentStyle={{
+                            borderRadius: 12,
+                            border: "1px solid #e5e7eb",
+                            fontSize: 12,
+                          }}
+                          formatter={(v) => [fmtUSD(v), "Daily P&L"]}
+                          labelFormatter={(l) => `Date: ${l}`}
+                        />
+
+                        <ReferenceLine
+                          y={0}
+                          stroke="#9ca3af"
+                          strokeDasharray="4 4"
+                        />
+
+                        <Area
+                          type="monotone"
+                          dataKey="pnl"
+                          stroke={pnlStats.positive ? "#16a34a" : "#dc2626"}
+                          strokeWidth={2}
+                          fill="url(#pnlGradient)"
+                          dot={false}
+                          activeDot={{ r: 4 }}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+
+                    {/* LEGEND */}
+                    <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block w-3 h-[2px] bg-blue-600" />
+                        Daily revenue (closed trades)
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block w-3 h-[2px] bg-gray-400" />
+                        Break-even
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             {/* OPEN POSITIONS TABLE */}
             <div className="bg-white rounded-2xl border shadow-sm p-5">
-              <div className="flex items-end justify-between">
+              <div className="flex items-end justify-between mb-4">
                 <div>
-                  <h2 className="text-sm font-semibold text-gray-800">
+                  <h2 className="text-sm font-semibold text-gray-900">
                     Open Positions (Live)
                   </h2>
                   <p className="text-xs text-gray-500">
-                    Sorted by biggest movers (click row for details)
+                    Active positions with real-time price updates
                   </p>
                 </div>
 
                 <div className="text-xs text-gray-400">
-                  {openPositionsSorted.length} open
+                  {openPositionsWithMetrics.length} open
                 </div>
               </div>
 
@@ -417,48 +565,78 @@ export default function Dashboard() {
                     <tr className="border-b text-gray-500">
                       <Th>Symbol</Th>
                       <Th>Strategy</Th>
-                      <Th className="text-right">Premium</Th>
-                      <Th className="text-right">Live</Th>
-                      <Th className="text-right">Δ%</Th>
-                      <Th className="text-right">Updated</Th>
+                      <Th className="text-right">Open P&amp;L</Th>
+                      <Th className="text-right">Cost (Premium)</Th>
+                      <Th className="text-right">Contracts</Th>
                     </tr>
                   </thead>
 
                   <tbody>
-                    {openPositionsSorted.map((pos, idx) => {
-                      const ch = pctNum(pos?.changePercent ?? 0);
+                    {openPositionsWithMetrics.map(({ pos, metrics: m }, idx) => {
+                      const symbol = String(pos.symbol).toUpperCase();
+                      const q = quotes[symbol] || {};
+                      const premium = Number(pos?.netPremium);
+
                       return (
-                        <tr
-                          key={`${pos.symbol}-${idx}`}
-                          className="border-b hover:bg-gray-50 cursor-pointer"
-                          onClick={() => setSelectedTicker(pos.symbol)}
-                        >
+                        <tr key={symbol + idx} className="border-b hover:bg-gray-50">
+                          {/* SYMBOL + PRICE */}
                           <Td className="font-semibold text-gray-900">
-                            {pos.symbol}
+                            <div>{symbol}</div>
+
+                            {q.price != null ? (
+                              <div className="text-[11px] text-gray-500">
+                                ${Number(q.price).toFixed(2)}{" "}
+                                <span
+                                  className={
+                                    Number(q.changePercent ?? 0) >= 0
+                                      ? "text-emerald-600"
+                                      : "text-red-600"
+                                  }
+                                >
+                                  ({Number(q.changePercent ?? 0).toFixed(2)}%)
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="text-[11px] text-gray-400">
+                                Waiting price…
+                              </div>
+                            )}
                           </Td>
 
-                          <Td className="text-gray-700">
-                            {abbreviatePosition(pos)}
-                          </Td>
+                          {/* STRATEGY */}
+                          <Td className="text-gray-700">{pos.strategy || "—"}</Td>
 
+                          {/* OPEN P&L */}
                           <Td className="text-right">
-                            {fmtUSDNode(moneyNum(pos?.netPremium ?? 0))}
+                            <div
+                              className={`font-semibold ${
+                                m.openPnL >= 0 ? "text-emerald-600" : "text-red-600"
+                              }`}
+                            >
+                              {m.openPnL >= 0 ? "+" : "-"}$
+                              {Math.abs(m.openPnL).toFixed(2)}
+                            </div>
+
+                            <div className="text-[11px] text-gray-500">
+                              ({fmtPct(m.openPnLPct)})
+                            </div>
                           </Td>
 
+                          {/* COST (PREMIUM) */}
                           <Td className="text-right font-semibold">
-                            {pos?.livePrice ? `$${Number(pos.livePrice).toFixed(2)}` : "—"}
+                            <span
+                              className={
+                                m.totalCost >= 0 ? "text-red-600" : "text-emerald-600"
+                              }
+                            >
+                              {m.totalCost >= 0 ? "-" : "+"}$
+                              {Math.abs(m.totalCost).toFixed(2)}
+                            </span>
                           </Td>
 
-                          <Td
-                            className={`text-right font-semibold ${
-                              ch >= 0 ? "text-emerald-600" : "text-red-600"
-                            }`}
-                          >
-                            {fmtPct(ch)}
-                          </Td>
-
-                          <Td className="text-right text-gray-400">
-                            {timeHHMMSS(pos?.updatedAt)}
+                          {/* CONTRACTS */}
+                          <Td className="text-right font-semibold text-gray-700">
+                            {Number.isFinite(m.qty) ? m.qty : "—"}
                           </Td>
                         </tr>
                       );
@@ -466,7 +644,7 @@ export default function Dashboard() {
                   </tbody>
                 </table>
 
-                {openPositionsSorted.length === 0 && (
+                {openPositionsWithMetrics.length === 0 && (
                   <div className="mt-6 text-sm text-gray-500">
                     No open positions right now.
                   </div>
