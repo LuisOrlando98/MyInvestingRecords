@@ -43,6 +43,73 @@ const fmtCompact = (n) =>
     maximumFractionDigits: 1,
   }).format(Number(n || 0));
 
+const getDateRange = (preset) => {
+  const now = new Date();
+
+  const startOfDay = (d) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+  let from = "";
+  let to = dateKeyLocal(startOfDay(now));
+
+  switch (preset) {
+    case "today":
+      from = dateKeyLocal(startOfDay(now));
+      break;
+
+    case "last7": {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 6);
+      from = dateKeyLocal(startOfDay(d));
+      break;
+    }
+
+    case "lastMonth": {
+      const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const last = new Date(now.getFullYear(), now.getMonth(), 0);
+      from = dateKeyLocal(first);
+      to = dateKeyLocal(last);
+      break;
+    }
+
+    case "last3m": {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 3);
+      from = dateKeyLocal(startOfDay(d));
+      break;
+    }
+
+    case "thisYear": {
+      const first = new Date(now.getFullYear(), 0, 1);
+      from = dateKeyLocal(first);
+      break;
+    }
+
+    case "lastYear": {
+      const first = new Date(now.getFullYear() - 1, 0, 1);
+      const last = new Date(now.getFullYear() - 1, 11, 31);
+      from = dateKeyLocal(first);
+      to = dateKeyLocal(last);
+      break;
+    }
+
+    default:
+      return { from: "", to: "" };
+  }
+
+  return { from, to };
+};
+
+const DATE_PRESET_LABELS = {
+  today: "1D",
+  last7: "7D",
+  lastMonth: "1M",
+  last3m: "3M",
+  thisYear: "This Year",
+  lastYear: "Last Year",
+  custom: "Custom",
+};
+
 export default function Performance() {
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -54,6 +121,7 @@ export default function Performance() {
   const [result, setResult] = useState("ALL");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [datePreset, setDatePreset] = useState("lastMonth");
 
   // Calendar
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -76,8 +144,8 @@ export default function Performance() {
       const { data } = await axios.get("/api/performance", {
         params: {
           symbol: debouncedSymbol || undefined,
-          from: from || undefined,
-          to: to || undefined,
+          from: from ? `${from}T00:00:00.000` : undefined,
+          to: to ? `${to}T23:59:59.999` : undefined,
         },
         signal: controller.signal,
       });
@@ -294,7 +362,8 @@ export default function Performance() {
           <div className="border-t" />
 
           {/* ===== FILTER LINE (FULL WIDTH) ===== */}
-          <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_1fr] gap-3 w-full">
+          <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_1fr_1fr] gap-3 w-full">
+
             <input
               placeholder="Symbol"
               value={symbol}
@@ -312,6 +381,29 @@ export default function Performance() {
               <option>WIN</option>
               <option>LOSS</option>
               <option>BREAKEVEN</option>
+            </select>
+
+            {/* 🔥 DATE RANGE PRESET */}
+            <select
+              value={datePreset}
+              onChange={(e) => {
+                const preset = e.target.value;
+                setDatePreset(preset);
+
+                const range = getDateRange(preset);
+                setFrom(range.from);
+                setTo(range.to);
+                setSelectedDay(null);
+              }}
+              className="h-10 w-full border rounded-lg px-3 text-sm bg-white
+                        focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+            >
+              <option value="today">1D</option>
+              <option value="last7">7D</option>
+              <option value="lastMonth">1M</option>
+              <option value="last3m">3M</option>
+              <option value="thisYear">This Year</option>
+              <option value="lastYear">Last Year</option>
             </select>
 
             <input

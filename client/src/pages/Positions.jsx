@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { XCircle, MoreVertical } from "lucide-react";
 import api from "../services/api";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useRef } from "react";
 import { buildOptionarUrlFromPosition } from "../utils/optionarLink";
 import { Eye } from "lucide-react"; // icono profesional
@@ -37,6 +37,9 @@ function fmtDateYYYYMMDD(d) {
 
 function Positions() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const rowRefs = useRef({});
+  const tableContainerRef = useRef(null);
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -147,6 +150,59 @@ function Positions() {
       openCount,
     };
   }, [sortedPositions]);
+
+  useEffect(() => {
+    const id = location.state?.highlightPositionId;
+    if (!id) return;
+
+    let attempts = 0;
+    let rafId;
+
+    const scrollAndHighlight = () => {
+      const row = rowRefs.current[id];
+      const container = tableContainerRef.current;
+
+      if (!row || !container) {
+        attempts++;
+        if (attempts < 30) {
+          rafId = requestAnimationFrame(scrollAndHighlight);
+        }
+        return;
+      }
+
+      const rowOffset = row.offsetTop;
+      const rowHeight = row.offsetHeight;
+      const containerHeight = container.clientHeight;
+
+      container.scrollTo({
+        top: rowOffset - containerHeight / 2 + rowHeight / 2,
+        behavior: "smooth",
+      });
+
+      row.classList.add(
+        "ring-4",
+        "ring-blue-500",
+        "bg-blue-100",
+        "relative",
+        "z-10"
+      );
+
+      setTimeout(() => {
+        row.classList.remove(
+          "ring-4",
+          "ring-blue-500",
+          "bg-blue-100",
+          "relative",
+          "z-10"
+        );
+      }, 4000);
+    };
+
+    rafId = requestAnimationFrame(scrollAndHighlight);
+
+    return () => cancelAnimationFrame(rafId);
+  }, [location.state?.highlightPositionId]);
+
 
   const filteredPositions = useMemo(() => {
     return sortedPositions.filter((p) => {
@@ -300,7 +356,10 @@ function Positions() {
         </div>
 
       {/* TABLE */}
-      <div className="overflow-x-auto shadow border rounded-lg">
+      <div
+        ref={tableContainerRef}
+        className="overflow-x-auto shadow border rounded-lg max-h-[70vh] overflow-y-auto"
+      >
         <table className="min-w-full text-[15px]">
           <thead className="bg-gray-100 text-gray-700 border-b sticky top-0 shadow-sm">
             <tr className="[&>th]:px-3 [&>th]:py-2 text-left">
@@ -336,6 +395,9 @@ function Positions() {
                 <React.Fragment key={pos._id}>
                   {/* === MAIN ROW (Double-Click to Edit) === */}
                   <tr
+                    ref={(el) => {
+                      if (el) rowRefs.current[pos._id] = el;
+                    }}
                     onDoubleClick={() => navigate(`/positions/${pos._id}/edit`)}                   
                     className={`relative transition cursor-pointer ${
                       pos.status === "Closed"

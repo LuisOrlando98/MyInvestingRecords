@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AreaChart,
   LineChart,
@@ -180,6 +181,8 @@ const rangeTitleMap = {
    MAIN
 ========================================================= */
 export default function Dashboard() {
+  const navigate = useNavigate();
+
   const [stats, setStats] = useState(null);
   const [monthlySummary, setMonthlySummary] = useState([]);
   // Chart filters
@@ -578,7 +581,20 @@ export default function Dashboard() {
                       const premium = Number(pos?.netPremium);
 
                       return (
-                        <tr key={symbol + idx} className="border-b hover:bg-gray-50">
+                        <tr
+                          key={symbol + idx}
+                          onClick={() =>
+                            navigate("/positions", {
+                              state: { highlightPositionId: pos._id },
+                            })
+                          }
+                          className="
+                            border-b
+                            hover:bg-blue-50
+                            cursor-pointer
+                            transition
+                          "
+                        >
                           {/* SYMBOL + PRICE */}
                           <Td className="font-semibold text-gray-900">
                             <div>{symbol}</div>
